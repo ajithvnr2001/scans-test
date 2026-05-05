@@ -105,6 +105,45 @@ Override parallel workers manually:
 python run.py --max-workers 32
 ```
 
+## Monthly Pine Script
+
+Use this file on a TradingView `1M` chart:
+
+```text
+/workspaces/scans-test/monthly/five_star_setup.pine
+```
+
+Default Pine display:
+
+```text
+Signal Mode = Early image only
+Show Status Table = true
+Show Current Status Label = true
+Show Recent Signals = true
+Show Historical Signals = false
+Show BAD Signals = false
+```
+
+If the chart only shows lines, enable `Show Status Table` and `Show Recent Signals`. For debugging, set `Signal Mode = All actionable`; for full history, enable `Show Historical Signals`.
+
+Marker meaning:
+
+```text
+EARLY = clean aggressive monthly entry near pivot
+BO    = monthly breakout
+FT    = monthly follow-through, already moving
+NEAR  = higher-timeframe watchlist/prepare only
+BAD   = avoid
+```
+
+Best monthly use:
+
+```text
+Monthly EARLY/BO + Weekly EARLY/BO/FT = highest probability
+Monthly NEAR + Weekly EARLY/BO        = watchlist becoming actionable
+Monthly NEAR only                     = watchlist, not entry
+```
+
 ## Scoring
 
 The scanner scores each stock on:
@@ -119,6 +158,23 @@ The scanner scores each stock on:
 
 Deep or wide bases are capped as `damaged_base` so they do not pass just because
 the last candle jumps above an old pivot.
+
+## How To Read Monthly Results
+
+Important fields in `monthly/output/results.json`:
+
+```text
+stage
+score
+rating
+metrics.distance_to_pivot_pct
+metrics.breakout_volume_ratio
+metrics.recent_range_pct
+metrics.base_drawdown_pct
+metrics.post_peak_drawdown_pct
+```
+
+Use `overall/output/results.json` for final priority because it combines monthly with weekly and daily confirmation.
 
 ## Validate
 

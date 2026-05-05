@@ -73,10 +73,31 @@ overall/output/monthly.json
 overall/output/results.json
 ```
 
+For a clean rerun from scratch, remove old JSON output first:
+
+```bash
+cd /workspaces/scans-test
+find daily/output weekly/output monthly/output overall/output -type f -name '*.json' -delete
+cd /workspaces/scans-test/overall
+python run.py --output-dir output
+```
+
 Then rerank the already scanned data using stricter upside and timeframe filters:
 
 ```bash
 python run.py --combine-only --input-dir output --output-dir output/weekly-upside --min-timeframes 2 --require-weekly --min-technical-upside 8
+```
+
+Reference-image early setup list:
+
+```bash
+python run.py --combine-only --input-dir output --output-dir output/early-image --early-image-only --min-timeframes 1 --min-technical-upside 8
+```
+
+Weekly-supported early setup list:
+
+```bash
+python run.py --combine-only --input-dir output --output-dir output/early-image-weekly --early-image-only --require-weekly --min-timeframes 1 --min-technical-upside 8
 ```
 
 Very strict version:
@@ -89,6 +110,78 @@ Monthly + weekly early watchlist:
 
 ```bash
 python run.py --combine-only --input-dir output --output-dir output/monthly-weekly-watchlist --require-monthly --require-weekly --min-timeframes 2 --min-technical-upside 8 --include-near-only
+```
+
+Broader early watchlist, including `NEAR` names:
+
+```bash
+python run.py --combine-only --input-dir output --output-dir output/early-image-watchlist --early-image-only --include-near-only --min-technical-upside 8
+```
+
+## Output Priority
+
+Open the outputs in this order:
+
+```text
+1. overall/output/early-image-weekly/results.json
+   Best image-style list with weekly support. This is the cleanest entry list.
+
+2. overall/output/early-image/results.json
+   Image-style daily/weekly/monthly entries. Good for finding fresh BO or EARLY setups.
+
+3. overall/output/weekly-upside/results.json
+   Balanced high-probability list with weekly confirmation and 8%+ measured upside.
+
+4. overall/output/high-upside-entry/results.json
+   Stricter list with weekly confirmation, two timeframes, and 15%+ measured upside.
+
+5. overall/output/early-image-watchlist/results.json
+   Broader list that includes NEAR names. Use this for preparation, not automatic entry.
+
+6. overall/output/monthly-weekly-watchlist/results.json
+   Higher-timeframe watchlist requiring monthly + weekly alignment.
+```
+
+## How To Analyse Results
+
+Start with `overall/output/early-image-weekly/results.json`. For each symbol:
+
+```text
+best_stage = BO or EARLY  -> entry-stage candidate
+best_stage = NEAR         -> watchlist, wait for EARLY or BO
+best_stage = FT           -> already moved; prefer pullback/risk-controlled entry
+confirmation = A/A+       -> stronger multi-timeframe support
+technical_upside_pct      -> measured upside from base; prefer 8%+, stronger at 15%+
+pine_confirmation         -> exact TradingView Pine script and timeframe to check
+```
+
+Then inspect the timeframe metrics:
+
+```text
+metrics.distance_to_pivot_pct
+  near 0 is best for entry. Too far above pivot means late/extended.
+
+metrics.recent_range_pct
+  lower means tighter controlled action. Tightness is important for the reference-image pattern.
+
+metrics.base_drawdown_pct
+  lower means pause, not crash.
+
+metrics.breakout_volume_ratio
+  1.4x+ confirms demand on breakout bars.
+
+metrics.vertical_gain_pct
+  confirms the first strong buying-force move.
+```
+
+Decision hierarchy:
+
+```text
+Monthly EARLY/BO + Weekly EARLY/BO/FT = highest probability
+Weekly EARLY/BO + Daily EARLY/BO      = best timing combo
+Daily BO alone                        = valid entry, but lower confidence
+NEAR only                             = watchlist only
+BAD/damaged base                      = avoid
 ```
 
 ## Individual Timeframe Commands
@@ -187,6 +280,15 @@ BAD   = damaged base, avoid
 
 The overall output includes `pine_confirmation`, which tells you which Pine script to open and which marker to look for.
 
+The Pine scripts default to `Signal Mode = Early image only`. That matches the reference images more closely. They also show a current status table by default, so the chart should not look blank even when there is no active signal.
+
+```text
+shown by default = status table, current status label, recent EARLY/NEAR/BO markers
+hidden by default = old full-history signal spam, BAD spam, and late FT markers
+optional mode     = set Signal Mode to All actionable and Show Historical Signals to true
+if only lines show = make sure Show Status Table and Show Recent Signals are enabled
+```
+
 ## How The Python Scanner Works
 
 Each timeframe scanner does the same job with timeframe-specific defaults:
@@ -266,6 +368,15 @@ Weekly EARLY + Daily EARLY/BO         = strong timing combo
 Daily BO alone                        = entry, but lower confidence
 NEAR only                             = watchlist, not entry
 BAD                                   = avoid
+```
+
+For the reference-image “early” view, use `--early-image-only`. It keeps:
+
+```text
+EARLY        = strict pre-breakout entry
+NEAR         = watchlist near pivot, only included directly when --include-near-only is also used
+BO first day = fresh breakout near pivot with volume
+FT           = excluded from the early-image view because it is already moving
 ```
 
 ## Validation

@@ -41,6 +41,7 @@ def main() -> None:
         min_timeframes=args.min_timeframes,
         require_weekly=args.require_weekly,
         require_monthly=args.require_monthly,
+        early_image_only=args.early_image_only,
     )
 
     payload = {
@@ -54,6 +55,7 @@ def main() -> None:
             "min_timeframes": args.min_timeframes,
             "require_weekly": args.require_weekly,
             "require_monthly": args.require_monthly,
+            "early_image_only": args.early_image_only,
         },
         "pine_scripts": {
             "daily": "../daily/five_star_setup.pine on TradingView 1D chart",
@@ -100,6 +102,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--require-weekly", action="store_true", help="Require weekly confirmation.")
     parser.add_argument("--require-monthly", action="store_true", help="Require monthly confirmation.")
+    parser.add_argument(
+        "--early-image-only",
+        action="store_true",
+        help="Keep only reference-image style early setups: EARLY, NEAR, or first-day BO; excludes late FT.",
+    )
     parser.add_argument("--include-near-only", action="store_true", help="Allow candidates that are only NEAR.")
     parser.add_argument("--combine-only", action="store_true", help="Do not scan; combine existing output JSON files.")
     parser.add_argument(

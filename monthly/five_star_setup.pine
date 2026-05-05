@@ -30,10 +30,22 @@ float BREAKOUT_VOL_RATIO = 1.40
 float EARLY_MAX_BELOW_PIVOT = 0.04
 float EARLY_MAX_RECENT_RANGE = 0.16
 float EARLY_MAX_BASE_DRAWDOWN = 0.32
+float IMAGE_MIN_VERTICAL = 0.40
+float IMAGE_MAX_RECENT_RANGE = 0.22
+float IMAGE_MAX_BASE_DRAWDOWN = 0.34
+float IMAGE_MAX_BO_EXTENSION = 0.08
+float IMAGE_MAX_NEAR_ABOVE_PIVOT = 0.01
 
+signalMode = input.string("Early image only", "Signal Mode", options=["Early image only", "All actionable"])
 minScore = input.int(7, "Minimum Score", minval=1, maxval=10)
-showLabels = input.bool(true, "Show Labels")
+showLabels = input.bool(true, "Show Signal Labels")
+showStatusLabel = input.bool(true, "Show Current Status Label")
+showStatusTable = input.bool(true, "Show Status Table")
+showHistoricalSignals = input.bool(false, "Show Historical Signals")
+showRecentSignals = input.bool(true, "Show Recent Signals")
+recentSignalBars = input.int(36, "Recent Signal Bars", minval=1, maxval=500)
 showBaseBox = input.bool(true, "Show Base Box")
+showBadSignals = input.bool(false, "Show BAD Signals")
 
 rangePct(float hi, float lo) =>
     lo > 0 ? (hi - lo) / lo : 1.0
@@ -150,9 +162,20 @@ rawScore := rawScore + (fastFollowThrough ? 1 : 0)
 score = damagedBase ? math.min(rawScore, 5) : rawScore
 earlyEntry = enoughData and not damagedBase and nearBreakout and score >= 7 and strongVertical and volumeDryUp and recentRange <= EARLY_MAX_RECENT_RANGE and baseDrawdown <= EARLY_MAX_BASE_DRAWDOWN and close >= pivot * (1.0 - EARLY_MAX_BELOW_PIVOT) and close > open and strongClose
 actionable = enoughData and not damagedBase and score >= minScore and (earlyEntry or nearBreakout or breakoutToday or followThrough)
+imageClean = enoughData and not damagedBase and score >= minScore and trendOk and verticalGain >= IMAGE_MIN_VERTICAL and recentRange <= IMAGE_MAX_RECENT_RANGE and baseDrawdown <= IMAGE_MAX_BASE_DRAWDOWN
+imageNear = imageClean and nearBreakout and distanceToPivot >= -NEAR_PIVOT_PCT and distanceToPivot <= IMAGE_MAX_NEAR_ABOVE_PIVOT
+imageBreakout = imageClean and breakoutToday and distanceToPivot <= IMAGE_MAX_BO_EXTENSION and volumeConfirm
+imageSignal = earlyEntry or imageNear or imageBreakout
+displaySignal = signalMode == "Early image only" ? imageSignal : actionable
+recentWindowVisible = showRecentSignals and bar_index >= last_bar_index - recentSignalBars
+displayThisBar = displaySignal and (showHistoricalSignals or recentWindowVisible or barstate.islast)
 
 stageText = damagedBase ? "BAD" : breakoutToday ? "BO" : followThrough ? "FT" : earlyEntry ? "EARLY" : nearBreakout ? "NEAR" : extended ? "EXTENDED" : "BASE"
 rating = score >= 10 ? "A+" : score >= 8 ? "A" : score >= 6 ? "B" : "C"
+statusText = not enoughData ? "WAIT" : damagedBase ? "BAD" : displaySignal ? stageText : actionable ? stageText : imageClean ? "CLEAN BASE" : "NO SETUP"
+statusColor = displaySignal ? color.new(color.yellow, 0) : actionable ? color.new(color.aqua, 10) : imageClean ? color.new(color.lime, 15) : damagedBase ? color.new(color.red, 5) : color.new(color.gray, 15)
+labelY = high + nz(ta.atr(14), close * 0.03) * 2.0
+statusPanelText = "Monthly " + statusText + " " + rating + "\nMode: " + signalMode + "\nScore: " + str.tostring(score) + "\nPivot Dist: " + str.tostring(distanceToPivot * 100, "#.0") + "%\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nPost-Peak DD: " + str.tostring(postPeakDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
 
 plot(ma20, "20 MMA/SMA", color=color.new(color.black, 0), linewidth=1)
 plot(ma50, "50 MMA/SMA", color=color.new(color.blue, 35), linewidth=1)
@@ -164,17 +187,31 @@ pTop = plot(baseTop, "Monthly Base High", color=color.new(color.red, 70), style=
 pBottom = plot(baseBottom, "Monthly Base Low", color=color.new(color.red, 82), style=plot.style_linebr)
 fill(pTop, pBottom, color=color.new(color.red, 88), title="Monthly Base Area")
 
-bgcolor(actionable ? color.new(color.aqua, 86) : na)
-plotshape(breakoutToday and actionable, title="Monthly BO", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.lime, text="BO")
-plotshape(earlyEntry, title="Monthly Early", style=shape.diamond, location=location.belowbar, size=size.small, color=color.orange, text="EARLY")
-plotshape(nearBreakout and actionable and not earlyEntry, title="Monthly Near", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.yellow, text="NEAR")
-plotshape(followThrough and actionable, title="Monthly FT", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.aqua, text="FT")
-plotshape(damagedBase and weakVertical, title="Monthly Bad Base", style=shape.xcross, location=location.abovebar, size=size.tiny, color=color.red, text="BAD")
+bgcolor(displayThisBar ? color.new(color.aqua, 86) : na)
+barcolor(displayThisBar ? color.new(color.lime, 0) : na)
+plotshape(displayThisBar and breakoutToday, title="Monthly Image BO", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.lime, text="BO")
+plotshape(displayThisBar and earlyEntry, title="Monthly Image EARLY", style=shape.diamond, location=location.belowbar, size=size.small, color=color.orange, text="EARLY")
+plotshape(displayThisBar and nearBreakout and not earlyEntry, title="Monthly Image NEAR", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.yellow, text="NEAR")
+plotshape(displayThisBar and (signalMode == "All actionable") and followThrough, title="Monthly Follow Through", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.aqua, text="FT")
+plotshape(showBadSignals and damagedBase and weakVertical and (showHistoricalSignals or barstate.islast), title="Monthly Bad Base", style=shape.xcross, location=location.abovebar, size=size.tiny, color=color.red, text="BAD")
 
-if showLabels and actionable
-    labelText = "Monthly " + stageText + " " + rating + "\nScore: " + str.tostring(score) + "\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nPost-Peak DD: " + str.tostring(postPeakDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
+if showLabels and displayThisBar
+    labelText = "Monthly " + stageText + " " + rating + "\nMode: " + signalMode + "\nScore: " + str.tostring(score) + "\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nPost-Peak DD: " + str.tostring(postPeakDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
     label.new(bar_index, high, labelText, style=label.style_label_down, textcolor=color.black, color=color.new(color.yellow, 0))
 
+var label currentStatusLabel = na
+if showStatusLabel and barstate.islast
+    if not na(currentStatusLabel)
+        label.delete(currentStatusLabel)
+    currentStatusLabel := label.new(bar_index, labelY, statusPanelText, style=label.style_label_left, textcolor=color.black, color=statusColor)
+
+var table statusTable = table.new(position.top_right, 1, 1, frame_color=color.new(color.black, 65), frame_width=1)
+if showStatusTable and barstate.islast
+    table.cell(statusTable, 0, 0, statusPanelText, text_color=color.black, bgcolor=statusColor, text_size=size.normal)
+
+alertcondition(imageBreakout, "Monthly Image Breakout", "Monthly image-style BO setup on {{ticker}}")
+alertcondition(earlyEntry, "Monthly Image Early Entry", "Monthly image-style EARLY setup on {{ticker}}")
+alertcondition(imageNear and not earlyEntry, "Monthly Image Near", "Monthly image-style NEAR setup on {{ticker}}")
 alertcondition(earlyEntry, "Monthly Early Entry", "Monthly 5 Star EARLY setup on {{ticker}}")
 alertcondition(actionable and breakoutToday, "Monthly Breakout", "Monthly 5 Star BO setup on {{ticker}}")
 alertcondition(actionable and nearBreakout and not earlyEntry, "Monthly Near Breakout", "Monthly 5 Star NEAR setup on {{ticker}}")

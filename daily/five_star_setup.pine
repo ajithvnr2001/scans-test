@@ -19,14 +19,26 @@ float DAMAGED_DRAWDOWN = 0.33
 float DAMAGED_RANGE = 0.45
 float MAX_RECENT_RANGE = 0.14
 float BREAKOUT_VOL_RATIO = 1.40
+float IMAGE_MIN_VERTICAL = 0.30
+float IMAGE_MAX_RECENT_RANGE = 0.16
+float IMAGE_MAX_BASE_DRAWDOWN = 0.30
+float IMAGE_MAX_BO_EXTENSION = 0.05
+float IMAGE_MAX_NEAR_ABOVE_PIVOT = 0.01
 
+signalMode = input.string("Early image only", "Signal Mode", options=["Early image only", "All actionable"])
 minScore = input.int(7, "Minimum Score", minval=1, maxval=10)
 earlyScore = input.int(8, "Aggressive Early Score", minval=1, maxval=10)
 earlyMaxPivotDistance = input.float(1.0, "Early Max Below Pivot %", minval=0.2, maxval=2.0, step=0.1) / 100.0
 earlyMaxRecentRange = input.float(8.0, "Early Max Tight Range %", minval=2.0, maxval=14.0, step=0.5) / 100.0
 earlyMaxBaseDrawdown = input.float(22.0, "Early Max Base Drawdown %", minval=5.0, maxval=35.0, step=1.0) / 100.0
-showLabels = input.bool(true, "Show Labels")
+showLabels = input.bool(true, "Show Signal Labels")
+showStatusLabel = input.bool(true, "Show Current Status Label")
+showStatusTable = input.bool(true, "Show Status Table")
+showHistoricalSignals = input.bool(false, "Show Historical Signals")
+showRecentSignals = input.bool(true, "Show Recent Signals")
+recentSignalBars = input.int(80, "Recent Signal Bars", minval=1, maxval=500)
 showBaseBox = input.bool(true, "Show Base Box")
+showBadSignals = input.bool(false, "Show BAD Signals")
 
 rangePct(float hi, float lo) =>
     lo > 0 ? (hi - lo) / lo : 1.0
@@ -113,9 +125,20 @@ rawScore := rawScore + (fastFollowThrough ? 1 : 0)
 score = damagedBase ? math.min(rawScore, 5) : rawScore
 actionable = enoughData and not damagedBase and score >= minScore and (nearBreakout or breakoutToday or followThrough)
 earlyEntry = enoughData and not damagedBase and nearBreakout and not breakoutToday and score >= earlyScore and trendOk and verticalGain >= STRONG_VERTICAL and volumeDryUp and recentRange <= earlyMaxRecentRange and baseDrawdown <= earlyMaxBaseDrawdown and close >= pivot * (1.0 - earlyMaxPivotDistance) and close > open and close >= high - (high - low) * 0.35
+imageClean = enoughData and not damagedBase and score >= minScore and trendOk and verticalGain >= IMAGE_MIN_VERTICAL and recentRange <= IMAGE_MAX_RECENT_RANGE and baseDrawdown <= IMAGE_MAX_BASE_DRAWDOWN
+imageNear = imageClean and nearBreakout and distanceToPivot >= -NEAR_PIVOT_PCT and distanceToPivot <= IMAGE_MAX_NEAR_ABOVE_PIVOT
+imageBreakout = imageClean and breakoutToday and distanceToPivot <= IMAGE_MAX_BO_EXTENSION and volumeConfirm
+imageSignal = earlyEntry or imageNear or imageBreakout
+displaySignal = signalMode == "Early image only" ? imageSignal : actionable
+recentWindowVisible = showRecentSignals and bar_index >= last_bar_index - recentSignalBars
+displayThisBar = displaySignal and (showHistoricalSignals or recentWindowVisible or barstate.islast)
 
 stageText = damagedBase ? "DAMAGED_BASE" : breakoutToday ? "BO" : followThrough ? "FT" : earlyEntry ? "EARLY" : nearBreakout ? "NEAR" : extended ? "EXTENDED" : "BASE"
 rating = score >= 10 ? "A+" : score >= 8 ? "A" : score >= 6 ? "B" : "C"
+statusText = not enoughData ? "WAIT" : damagedBase ? "BAD" : displaySignal ? stageText : actionable ? stageText : imageClean ? "CLEAN BASE" : "NO SETUP"
+statusColor = displaySignal ? color.new(color.yellow, 0) : actionable ? color.new(color.aqua, 10) : imageClean ? color.new(color.lime, 15) : damagedBase ? color.new(color.red, 5) : color.new(color.gray, 15)
+labelY = high + nz(ta.atr(14), close * 0.03) * 2.0
+statusPanelText = "Daily " + statusText + " " + rating + "\nMode: " + signalMode + "\nScore: " + str.tostring(score) + "\nPivot Dist: " + str.tostring(distanceToPivot * 100, "#.0") + "%\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
 
 plot(ma20, "20 Daily SMA", color=color.new(color.black, 0), linewidth=1)
 plot(ma50, "50 Daily SMA", color=color.new(color.blue, 35), linewidth=1)
@@ -127,18 +150,32 @@ pTop = plot(baseTop, "Base High", color=color.new(color.red, 70), style=plot.sty
 pBottom = plot(baseBottom, "Base Low", color=color.new(color.red, 82), style=plot.style_linebr)
 fill(pTop, pBottom, color=color.new(color.red, 88), title="Controlled Pause Area")
 
-bgcolor(actionable ? color.new(color.aqua, 86) : na)
+bgcolor(displayThisBar ? color.new(color.aqua, 86) : na)
+barcolor(displayThisBar ? color.new(color.lime, 0) : na)
 
-plotshape(actionable and breakoutToday, title="Python Breakout Today", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.lime, text="BO")
-plotshape(earlyEntry, title="Aggressive Early Entry", style=shape.diamond, location=location.belowbar, size=size.small, color=color.orange, text="EARLY")
-plotshape(actionable and nearBreakout, title="Python Near Breakout", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.yellow, text="NEAR")
-plotshape(actionable and followThrough, title="Python Follow Through", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.aqua, text="FT")
-plotshape(damagedBase and weakVertical, title="Python Damaged Base", style=shape.xcross, location=location.abovebar, size=size.tiny, color=color.red, text="BAD")
+plotshape(displayThisBar and breakoutToday, title="Daily Image BO", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.lime, text="BO")
+plotshape(displayThisBar and earlyEntry, title="Daily Image EARLY", style=shape.diamond, location=location.belowbar, size=size.small, color=color.orange, text="EARLY")
+plotshape(displayThisBar and nearBreakout and not earlyEntry, title="Daily Image NEAR", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.yellow, text="NEAR")
+plotshape(displayThisBar and (signalMode == "All actionable") and followThrough, title="Daily Follow Through", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.aqua, text="FT")
+plotshape(showBadSignals and damagedBase and weakVertical and (showHistoricalSignals or barstate.islast), title="Daily Bad Base", style=shape.xcross, location=location.abovebar, size=size.tiny, color=color.red, text="BAD")
 
-if showLabels and actionable
-    labelText = "Daily " + stageText + " " + rating + "\nScore: " + str.tostring(score) + "\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
+if showLabels and displayThisBar
+    labelText = "Daily " + stageText + " " + rating + "\nMode: " + signalMode + "\nScore: " + str.tostring(score) + "\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
     label.new(bar_index, high, labelText, style=label.style_label_down, textcolor=color.black, color=color.new(color.yellow, 0))
 
+var label currentStatusLabel = na
+if showStatusLabel and barstate.islast
+    if not na(currentStatusLabel)
+        label.delete(currentStatusLabel)
+    currentStatusLabel := label.new(bar_index, labelY, statusPanelText, style=label.style_label_left, textcolor=color.black, color=statusColor)
+
+var table statusTable = table.new(position.top_right, 1, 1, frame_color=color.new(color.black, 65), frame_width=1)
+if showStatusTable and barstate.islast
+    table.cell(statusTable, 0, 0, statusPanelText, text_color=color.black, bgcolor=statusColor, text_size=size.normal)
+
+alertcondition(imageBreakout, "Daily Image Breakout", "Daily image-style BO setup on {{ticker}}")
+alertcondition(earlyEntry, "Daily Image Early Entry", "Daily image-style EARLY setup on {{ticker}}")
+alertcondition(imageNear and not earlyEntry, "Daily Image Near", "Daily image-style NEAR setup on {{ticker}}")
 alertcondition(actionable and breakoutToday, "Daily Breakout", "Daily 5 Star BO setup on {{ticker}}")
 alertcondition(earlyEntry, "Daily Early Entry", "Daily 5 Star EARLY setup on {{ticker}}")
 alertcondition(actionable and nearBreakout and not earlyEntry, "Daily Near Breakout", "Daily 5 Star NEAR setup on {{ticker}}")

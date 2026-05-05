@@ -105,6 +105,45 @@ Override parallel workers manually:
 python run.py --max-workers 32
 ```
 
+## Weekly Pine Script
+
+Use this file on a TradingView `1W` chart:
+
+```text
+/workspaces/scans-test/weekly/five_star_setup.pine
+```
+
+Default Pine display:
+
+```text
+Signal Mode = Early image only
+Show Status Table = true
+Show Current Status Label = true
+Show Recent Signals = true
+Show Historical Signals = false
+Show BAD Signals = false
+```
+
+If the chart only shows lines, enable `Show Status Table` and `Show Recent Signals`. For debugging, set `Signal Mode = All actionable`; for full history, enable `Show Historical Signals`.
+
+Marker meaning:
+
+```text
+EARLY = clean aggressive weekly entry near pivot
+BO    = weekly breakout
+FT    = weekly follow-through, already moving
+NEAR  = watchlist/prepare only
+BAD   = avoid
+```
+
+Best weekly use:
+
+```text
+Monthly EARLY/BO/NEAR + Weekly EARLY/BO = strong setup
+Weekly EARLY/BO + Daily EARLY/BO        = strong timing
+Weekly NEAR only                        = watchlist, not entry
+```
+
 ## Scoring
 
 The scanner scores each stock on:
@@ -119,6 +158,23 @@ The scanner scores each stock on:
 
 Deep or wide bases are capped as `damaged_base` so they do not pass just because
 the last candle jumps above an old pivot.
+
+## How To Read Weekly Results
+
+Important fields in `weekly/output/results.json`:
+
+```text
+stage
+score
+rating
+metrics.distance_to_pivot_pct
+metrics.breakout_volume_ratio
+metrics.recent_range_pct
+metrics.base_drawdown_pct
+metrics.post_peak_drawdown_pct
+```
+
+Use `overall/output/results.json` for final priority because it combines weekly with daily and monthly confirmation.
 
 ## Validate
 

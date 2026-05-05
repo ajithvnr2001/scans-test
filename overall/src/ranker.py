@@ -22,20 +22,36 @@ STAGE_WEIGHTS = {
 
 ENTRY_STAGES = {"early_entry", "breakout_today", "follow_through"}
 CONFIRMED_ENTRY_STAGES = {"early_entry", "breakout_today"}
+EARLY_IMAGE_STAGES = {"early_entry", "near_breakout", "breakout_today"}
 MAX_ENTRY_EXTENSION = {
     "daily": 5.0,
     "weekly": 6.0,
     "monthly": 8.0,
+}
+MAX_NEAR_DISTANCE = {
+    "daily": 2.0,
+    "weekly": 3.0,
+    "monthly": 5.0,
 }
 MAX_CLEAN_RECENT_RANGE = {
     "daily": 22.0,
     "weekly": 25.0,
     "monthly": 25.0,
 }
+MAX_EARLY_RECENT_RANGE = {
+    "daily": 16.0,
+    "weekly": 22.0,
+    "monthly": 22.0,
+}
 MAX_CLEAN_BASE_DRAWDOWN = {
     "daily": 30.0,
     "weekly": 30.0,
     "monthly": 34.0,
+}
+MIN_EARLY_VERTICAL = {
+    "daily": 30.0,
+    "weekly": 40.0,
+    "monthly": 40.0,
 }
 MIN_CONFIRMING_VOLUME = 1.40
 
@@ -85,6 +101,7 @@ def combine_timeframe_outputs(
     min_timeframes: int = 1,
     require_weekly: bool = False,
     require_monthly: bool = False,
+    early_image_only: bool = False,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, list[TimeframeResult]] = {}
 
@@ -105,6 +122,7 @@ def combine_timeframe_outputs(
         and candidate["timeframe_count"] >= min_timeframes
         and (not require_weekly or candidate["has_weekly"])
         and (not require_monthly or candidate["has_monthly"])
+        and (not early_image_only or candidate["has_early_image_setup"])
         and (
             min_technical_upside_pct is None
             or candidate["technical_upside_pct"] >= min_technical_upside_pct
@@ -116,6 +134,7 @@ def combine_timeframe_outputs(
             row["timeframe_count"],
             row["has_monthly"],
             row["has_weekly"],
+            row["early_image_timeframe_count"],
             row["technical_upside_pct"],
             row["best_single_score"],
         ),
@@ -134,6 +153,7 @@ def _score_symbol(
     has_entry_stage = any(result.stage in ENTRY_STAGES for result in results)
     has_confirmed_entry = any(result.stage in CONFIRMED_ENTRY_STAGES for result in results)
     has_clean_entry = any(_is_clean_entry(result) for result in results)
+    early_image_results = [result for result in results if _is_early_image_setup(result)]
     has_confirming_volume = any(_has_confirming_volume(result) for result in results)
     has_monthly = any(result.timeframe == "monthly" for result in results)
     has_weekly = any(result.timeframe == "weekly" for result in results)
@@ -195,6 +215,9 @@ def _score_symbol(
         "has_entry_stage": has_entry_stage,
         "has_confirmed_entry": has_confirmed_entry,
         "has_clean_entry": has_clean_entry,
+        "has_early_image_setup": bool(early_image_results),
+        "early_image_timeframes": [result.timeframe for result in early_image_results],
+        "early_image_timeframe_count": len(early_image_results),
         "has_confirming_volume": has_confirming_volume,
         "high_probability": high_probability,
         "has_monthly": has_monthly,
@@ -274,6 +297,32 @@ def _is_clean_entry(result: TimeframeResult) -> bool:
         return False
 
     return True
+
+
+def _is_early_image_setup(result: TimeframeResult) -> bool:
+    if result.stage not in EARLY_IMAGE_STAGES:
+        return False
+    if result.score < 7:
+        return False
+
+    metrics = result.metrics
+    distance = float(metrics.get("distance_to_pivot_pct", 100.0))
+    recent_range = float(metrics.get("recent_range_pct", 100.0))
+    base_drawdown = float(metrics.get("base_drawdown_pct", 100.0))
+    vertical_gain = float(metrics.get("vertical_gain_pct", 0.0))
+    volume_ratio = float(metrics.get("breakout_volume_ratio", 0.0))
+
+    if vertical_gain < MIN_EARLY_VERTICAL.get(result.timeframe, 40.0):
+        return False
+    if recent_range > MAX_EARLY_RECENT_RANGE.get(result.timeframe, 22.0):
+        return False
+    if base_drawdown > MAX_CLEAN_BASE_DRAWDOWN.get(result.timeframe, 30.0):
+        return False
+
+    if result.stage == "breakout_today":
+        return distance <= MAX_ENTRY_EXTENSION.get(result.timeframe, 5.0) and volume_ratio >= MIN_CONFIRMING_VOLUME
+
+    return -MAX_NEAR_DISTANCE.get(result.timeframe, 3.0) <= distance <= 1.0
 
 
 def _has_confirming_volume(result: TimeframeResult) -> bool:

@@ -52,6 +52,36 @@ class RankerTests(unittest.TestCase):
         self.assertGreaterEqual(results[0]["technical_upside_pct"], 8.0)
         self.assertIn("weekly/five_star_setup.pine", results[0]["pine_confirmation"][0])
 
+    def test_early_image_filter_excludes_late_follow_through_only(self) -> None:
+        outputs = {
+            "daily": {"results": [_row("ABC.NS", "follow_through", 10, 2.0, -2.0)]},
+            "weekly": {"results": [_row("ABC.NS", "follow_through", 9, 2.0, -2.0)]},
+            "monthly": {"results": []},
+        }
+
+        self.assertEqual(
+            combine_timeframe_outputs(outputs, min_overall_score=0, early_image_only=True),
+            [],
+        )
+
+    def test_early_image_filter_allows_near_watchlist_when_requested(self) -> None:
+        outputs = {
+            "daily": {"results": []},
+            "weekly": {"results": [_row("ABC.NS", "near_breakout", 8, 0.8, -1.5)]},
+            "monthly": {"results": []},
+        }
+
+        results = combine_timeframe_outputs(
+            outputs,
+            min_overall_score=0,
+            early_image_only=True,
+            include_near_only=True,
+        )
+
+        self.assertEqual(results[0]["symbol"], "ABC.NS")
+        self.assertTrue(results[0]["has_early_image_setup"])
+        self.assertEqual(results[0]["early_image_timeframes"], ["weekly"])
+
 
 def _row(symbol: str, stage: str, score: int, volume_ratio: float, distance: float) -> dict:
     return {
@@ -66,6 +96,7 @@ def _row(symbol: str, stage: str, score: int, volume_ratio: float, distance: flo
             "distance_to_pivot_pct": distance,
             "recent_range_pct": 6.0,
             "base_drawdown_pct": 12.0,
+            "vertical_gain_pct": 60.0,
             "latest_close": 100.0,
             "pivot": 100.0,
         },

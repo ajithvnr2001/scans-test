@@ -120,6 +120,29 @@ NEAR  = watchlist only
 BAD   = avoid
 ```
 
+Default Pine display:
+
+```text
+Signal Mode = Early image only
+Show Status Table = true
+Show Current Status Label = true
+Show Recent Signals = true
+Show Historical Signals = false
+Show BAD Signals = false
+```
+
+This keeps the chart focused on image-style setups instead of filling the chart with old `BAD`, `NEAR`, and `FT` markers. The status table should still show text even when the stock has no current signal.
+
+If you only see moving-average/base lines:
+
+```text
+1. Confirm this script is pasted on a 1D chart.
+2. Enable Show Status Table.
+3. Enable Show Recent Signals.
+4. For debugging, set Signal Mode = All actionable.
+5. For full history, enable Show Historical Signals.
+```
+
 Best daily use:
 
 ```text
@@ -162,3 +185,26 @@ base_drawdown_pct       = pause depth
 ```
 
 For real trading, always confirm the same symbol in `overall/output/results.json` and on the matching TradingView daily chart.
+
+## Daily Analysis Checklist
+
+Use daily mainly for timing after weekly/monthly support is present:
+
+```text
+best use     = weekly EARLY/BO plus daily EARLY/BO
+acceptable   = daily BO with strong volume and controlled risk
+watch only   = daily NEAR
+avoid        = BAD/damaged base
+```
+
+Important JSON fields:
+
+```text
+stage
+score
+rating
+metrics.distance_to_pivot_pct
+metrics.breakout_volume_ratio
+metrics.recent_range_pct
+metrics.base_drawdown_pct
+```
