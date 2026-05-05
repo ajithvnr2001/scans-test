@@ -1,0 +1,181 @@
+//@version=5
+indicator("5 Star Monthly Early Setup", overlay=true, max_labels_count=500)
+
+// Monthly version matched to monthly/src/strategy.py.
+// Use this on a MONTHLY chart.
+
+int MIN_CANDLES = 60
+int BASE_WINDOW = 18
+int BASE_METRIC_BARS = 17
+int DAMAGE_LOOKBACK = 45
+int RECENT_WINDOW = 5
+int RECENT_METRIC_BARS = 4
+int CONTRACTION_MID_BARS = 9
+int CONTRACTION_SHORT_BARS = 4
+int VERTICAL_WINDOW = 18
+int SCAN_HISTORY_BARS = 120
+int BREAKOUT_SCAN_BARS = 4
+int FOLLOW_THROUGH_MAX_BARS = 3
+int FAST_FOLLOW_THROUGH_BARS = 2
+
+float BREAKOUT_BUFFER = 0.005
+float NEAR_PIVOT_PCT = 0.05
+float STRONG_VERTICAL = 0.40
+float WEAK_VERTICAL = 0.25
+float MAX_BASE_DRAWDOWN = 0.28
+float MAX_RECENT_RANGE = 0.22
+float DAMAGED_DRAWDOWN = 0.38
+float DAMAGED_RANGE = 0.55
+float BREAKOUT_VOL_RATIO = 1.40
+float EARLY_MAX_BELOW_PIVOT = 0.04
+float EARLY_MAX_RECENT_RANGE = 0.16
+float EARLY_MAX_BASE_DRAWDOWN = 0.32
+
+minScore = input.int(7, "Minimum Score", minval=1, maxval=10)
+showLabels = input.bool(true, "Show Labels")
+showBaseBox = input.bool(true, "Show Base Box")
+
+rangePct(float hi, float lo) =>
+    lo > 0 ? (hi - lo) / lo : 1.0
+
+lowestCloseBeforeVertical(int offset) =>
+    float out = na
+    for j = 1 to VERTICAL_WINDOW
+        float v = close[offset + j]
+        if not na(v)
+            out := na(out) ? v : math.min(out, v)
+    out
+
+highestHighBeforeBase(int offset) =>
+    float out = na
+    for j = 1 to BASE_WINDOW
+        float v = high[offset + j]
+        if not na(v)
+            out := na(out) ? v : math.max(out, v)
+    out
+
+bestPriorGain() =>
+    float best = 0.0
+    for offset = RECENT_WINDOW to SCAN_HISTORY_BARS - 1
+        float candidateClose = close[offset]
+        float priorLow = lowestCloseBeforeVertical(offset)
+        if not na(candidateClose) and not na(priorLow) and priorLow > 0
+            best := math.max(best, (candidateClose - priorLow) / priorLow)
+    best
+
+maxPostPeakDrawdown() =>
+    float peak = na
+    float maxDd = 0.0
+    for loopIndex = 0 to DAMAGE_LOOKBACK - 2
+        int offset = DAMAGE_LOOKBACK - 1 - loopIndex
+        float h = high[offset]
+        float l = low[offset]
+        if not na(h) and not na(l)
+            if na(peak)
+                peak := h
+            else
+                if peak > 0
+                    maxDd := math.max(maxDd, (peak - l) / peak)
+                peak := math.max(peak, h)
+    maxDd
+
+breakoutStage() =>
+    int days = na
+    float bp = na
+    for loopIndex = 0 to BREAKOUT_SCAN_BARS - 1
+        int offset = BREAKOUT_SCAN_BARS - 1 - loopIndex
+        float rollingPivot = highestHighBeforeBase(offset)
+        bool isBreakout = not na(rollingPivot) and close[offset] >= rollingPivot * (1.0 + BREAKOUT_BUFFER)
+        if na(days) and isBreakout
+            days := offset
+            bp := rollingPivot
+    [days, bp]
+
+enoughData = bar_index + 1 >= MIN_CANDLES
+ma20 = ta.sma(close, 20)
+ma50 = ta.sma(close, 50)
+
+baseHigh = ta.highest(high[1], BASE_METRIC_BARS)
+baseLow = ta.lowest(low[1], BASE_METRIC_BARS)
+pivot = baseHigh
+baseRange = rangePct(baseHigh, baseLow)
+baseDrawdown = baseHigh > 0 ? (baseHigh - baseLow) / baseHigh : 1.0
+postPeakDrawdown = maxPostPeakDrawdown()
+distanceToPivot = pivot > 0 ? (close - pivot) / pivot : -1.0
+
+recentHigh = ta.highest(high[1], RECENT_METRIC_BARS)
+recentLow = ta.lowest(low[1], RECENT_METRIC_BARS)
+recentRange = rangePct(recentHigh, recentLow)
+
+cBase = rangePct(ta.highest(high[1], BASE_METRIC_BARS), ta.lowest(low[1], BASE_METRIC_BARS))
+cMid = rangePct(ta.highest(high[1], CONTRACTION_MID_BARS), ta.lowest(low[1], CONTRACTION_MID_BARS))
+cShort = rangePct(ta.highest(high[1], CONTRACTION_SHORT_BARS), ta.lowest(low[1], CONTRACTION_SHORT_BARS))
+
+verticalGain = bestPriorGain()
+volume20 = ta.sma(volume[1], 20)
+recentBaseVolume = ta.sma(volume[1], 10)
+priorBaseVolume = ta.sma(volume[11], 20)
+breakoutVolumeRatio = volume20 > 0 ? volume / volume20 : 0.0
+
+[daysSinceBreakout, breakoutPivot] = breakoutStage()
+hasBreakout = not na(daysSinceBreakout)
+nearBreakout = not hasBreakout and close >= pivot * (1.0 - NEAR_PIVOT_PCT)
+breakoutToday = hasBreakout and daysSinceBreakout == 0
+validBreakoutPivot = hasBreakout and not na(breakoutPivot) and breakoutPivot > 0
+followThrough = validBreakoutPivot and daysSinceBreakout > 0 and daysSinceBreakout <= FOLLOW_THROUGH_MAX_BARS and close / breakoutPivot <= 1.25
+extended = hasBreakout and not breakoutToday and not followThrough
+
+trendOk = close > ma50 and ma20 >= ma50 * 0.98
+strongVertical = verticalGain >= STRONG_VERTICAL
+weakVertical = verticalGain >= WEAK_VERTICAL
+pauseNotCrash = baseDrawdown <= MAX_BASE_DRAWDOWN and close >= baseLow * 1.08
+contracting = cBase > cMid * 1.03 and cMid >= cShort * 0.95 and cShort <= 0.22
+tight = recentRange <= MAX_RECENT_RANGE and close >= ma20 * 0.98
+volumeDryUp = recentBaseVolume < priorBaseVolume * 0.90
+damagedBase = baseDrawdown > DAMAGED_DRAWDOWN or baseRange > DAMAGED_RANGE or postPeakDrawdown > DAMAGED_DRAWDOWN
+volumeConfirm = breakoutVolumeRatio >= BREAKOUT_VOL_RATIO
+fastFollowThrough = followThrough and validBreakoutPivot and daysSinceBreakout <= FAST_FOLLOW_THROUGH_BARS and close >= breakoutPivot * 1.05
+strongClose = high > low ? (close - low) / (high - low) >= 0.65 : true
+
+int rawScore = 0
+rawScore := rawScore + (trendOk ? 1 : 0)
+rawScore := rawScore + (strongVertical ? 3 : weakVertical ? 2 : 0)
+rawScore := rawScore + (pauseNotCrash ? 1 : 0)
+rawScore := rawScore + ((contracting or tight) ? 2 : 0)
+rawScore := rawScore + (volumeDryUp ? 1 : 0)
+rawScore := rawScore + (breakoutToday ? 2 : nearBreakout ? 1 : followThrough ? 1 : 0)
+rawScore := rawScore + ((breakoutToday or followThrough or extended) and volumeConfirm ? 1 : 0)
+rawScore := rawScore + (fastFollowThrough ? 1 : 0)
+
+score = damagedBase ? math.min(rawScore, 5) : rawScore
+earlyEntry = enoughData and not damagedBase and nearBreakout and score >= 7 and strongVertical and volumeDryUp and recentRange <= EARLY_MAX_RECENT_RANGE and baseDrawdown <= EARLY_MAX_BASE_DRAWDOWN and close >= pivot * (1.0 - EARLY_MAX_BELOW_PIVOT) and close > open and strongClose
+actionable = enoughData and not damagedBase and score >= minScore and (earlyEntry or nearBreakout or breakoutToday or followThrough)
+
+stageText = damagedBase ? "BAD" : breakoutToday ? "BO" : followThrough ? "FT" : earlyEntry ? "EARLY" : nearBreakout ? "NEAR" : extended ? "EXTENDED" : "BASE"
+rating = score >= 10 ? "A+" : score >= 8 ? "A" : score >= 6 ? "B" : "C"
+
+plot(ma20, "20 MMA/SMA", color=color.new(color.black, 0), linewidth=1)
+plot(ma50, "50 MMA/SMA", color=color.new(color.blue, 35), linewidth=1)
+plot(pivot, "Monthly Pivot", color=color.new(color.orange, 0), style=plot.style_linebr)
+
+baseTop = showBaseBox ? baseHigh : na
+baseBottom = showBaseBox ? baseLow : na
+pTop = plot(baseTop, "Monthly Base High", color=color.new(color.red, 70), style=plot.style_linebr)
+pBottom = plot(baseBottom, "Monthly Base Low", color=color.new(color.red, 82), style=plot.style_linebr)
+fill(pTop, pBottom, color=color.new(color.red, 88), title="Monthly Base Area")
+
+bgcolor(actionable ? color.new(color.aqua, 86) : na)
+plotshape(breakoutToday and actionable, title="Monthly BO", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.lime, text="BO")
+plotshape(earlyEntry, title="Monthly Early", style=shape.diamond, location=location.belowbar, size=size.small, color=color.orange, text="EARLY")
+plotshape(nearBreakout and actionable and not earlyEntry, title="Monthly Near", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.yellow, text="NEAR")
+plotshape(followThrough and actionable, title="Monthly FT", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.aqua, text="FT")
+plotshape(damagedBase and weakVertical, title="Monthly Bad Base", style=shape.xcross, location=location.abovebar, size=size.tiny, color=color.red, text="BAD")
+
+if showLabels and actionable
+    labelText = "Monthly " + stageText + " " + rating + "\nScore: " + str.tostring(score) + "\nVertical: " + str.tostring(verticalGain * 100, "#.0") + "%\nBase DD: " + str.tostring(baseDrawdown * 100, "#.0") + "%\nPost-Peak DD: " + str.tostring(postPeakDrawdown * 100, "#.0") + "%\nRecent Range: " + str.tostring(recentRange * 100, "#.0") + "%\nVol: " + str.tostring(breakoutVolumeRatio, "#.00") + "x"
+    label.new(bar_index, high, labelText, style=label.style_label_down, textcolor=color.black, color=color.new(color.yellow, 0))
+
+alertcondition(earlyEntry, "Monthly Early Entry", "Monthly 5 Star EARLY setup on {{ticker}}")
+alertcondition(actionable and breakoutToday, "Monthly Breakout", "Monthly 5 Star BO setup on {{ticker}}")
+alertcondition(actionable and nearBreakout and not earlyEntry, "Monthly Near Breakout", "Monthly 5 Star NEAR setup on {{ticker}}")
+alertcondition(actionable and followThrough, "Monthly Follow Through", "Monthly 5 Star FT setup on {{ticker}}")

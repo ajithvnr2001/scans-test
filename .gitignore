@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.png
+what i want.md
+output/*.json
+**/output/*.json
+**/output/**/*.json

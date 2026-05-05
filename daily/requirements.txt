@@ -1,0 +1,3 @@
+yfinance>=0.2.38
+nsetools>=1.0.11
+
