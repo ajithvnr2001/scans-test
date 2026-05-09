@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from config.settings import (
@@ -62,7 +63,12 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Atomic write: write to a temp file next to the target, then rename.
+    # This guarantees results.json is either the previous complete file or
+    # the new complete file, never a half-written one (e.g. after Ctrl+C).
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_path, output_path)
 
     print(json.dumps(payload, indent=2))
 

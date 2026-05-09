@@ -6,6 +6,7 @@ from src.models import Candle, SetupSignal
 
 
 TIMEFRAME_NAME = "weekly"
+TIMEFRAME_BAR_NAME = "week"
 MIN_CANDLES = 80
 BASE_LOOKBACK = 26
 DAMAGE_LOOKBACK = 45
@@ -39,8 +40,6 @@ def analyze_five_star_setup(candles: list[Candle]) -> SetupSignal:
         )
 
     closes = [candle.close for candle in candles]
-    highs = [candle.high for candle in candles]
-    lows = [candle.low for candle in candles]
     volumes = [candle.volume for candle in candles]
 
     latest = candles[-1]
@@ -77,7 +76,7 @@ def analyze_five_star_setup(candles: list[Candle]) -> SetupSignal:
 
     if latest_close > ma50 and ma20 >= ma50 * 0.98:
         score += 1
-        reasons.append("price is above the 50-day average")
+        reasons.append(f"price is above the 50-{TIMEFRAME_BAR_NAME} average")
 
     if vertical_gain >= 0.40:
         score += 3

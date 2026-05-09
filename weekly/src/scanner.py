@@ -67,13 +67,14 @@ def run_scan(
             if match:
                 matches.append(match)
 
+    # Sort by: score desc, breakout volume desc, then proximity to pivot
+    # (closest to 0% wins; penalizes stocks already extended above pivot).
     matches.sort(
         key=lambda item: (
-            item.signal.score,
-            item.signal.metrics.get("breakout_volume_ratio", 0),
-            item.signal.metrics.get("distance_to_pivot_pct", -100),
+            -item.signal.score,
+            -item.signal.metrics.get("breakout_volume_ratio", 0),
+            abs(item.signal.metrics.get("distance_to_pivot_pct", 100)),
         ),
-        reverse=True,
     )
 
     return ScanSummary(

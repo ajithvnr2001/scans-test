@@ -15,7 +15,7 @@ The scanner is built for all NSE `EQ` stocks by default. It is not hard-coded to
 ## Folder Map
 
 ```text
-/workspaces/scans-test/
+scans-test/
 ├── daily/                  # Daily 1D scanner and daily Pine script
 │   ├── config/settings.py
 │   ├── five_star_setup.pine
@@ -40,16 +40,37 @@ The scanner is built for all NSE `EQ` stocks by default. It is not hard-coded to
 │   ├── src/ranker.py
 │   ├── tests/
 │   └── run.py
+├── FIXES.md                # Detailed weekly/monthly correctness fix notes
 ├── requirements.txt
 └── README.md
 ```
+
+> All paths below are shown relative to the repo root. On your machine the
+> repo may live anywhere; use your actual checkout path as the starting
+> directory for the commands.
+
+## Recent Correctness Fixes (weekly + monthly)
+
+The weekly and monthly scanners received six targeted correctness and
+robustness fixes. See [`FIXES.md`](./FIXES.md) for in-depth reasoning,
+diffs, and validation evidence. Summary:
+
+| # | What changed | Where |
+|---|--------------|-------|
+| 1 | Sort key no longer ranks extended breakouts above near-pivot setups. Score still dominates; proximity tie-breaks on ties. | `weekly/src/scanner.py`, `monthly/src/scanner.py` |
+| 2 | `yf.download` now retries up to 3 times with exponential backoff (0.75s, 1.5s) on empty or failed responses. Reduces silent drops from transient Yahoo rate limiting. | `weekly/src/data.py`, `monthly/src/data.py` |
+| 3 | 50-MA reason string reads `"50-week average"` on weekly and `"50-month average"` on monthly (previously always said `"50-day"`). | `weekly/src/strategy.py`, `monthly/src/strategy.py` |
+| 4 | `results.json` is now written atomically via a `.tmp` file + `os.replace`. Ctrl+C mid-write no longer corrupts the file. | `weekly/run.py`, `monthly/run.py` |
+| 5 | `error_details` truncation (previously silent at 25 rows) is now surfaced via `error_details_truncated` and `error_details_limit` fields. | `weekly/src/models.py`, `monthly/src/models.py` |
+| 6 | Unused `highs` / `lows` locals removed from `analyze_five_star_setup`. Pure cleanup, no behavior change. | `weekly/src/strategy.py`, `monthly/src/strategy.py` |
+
+All 35 unit tests pass and targeted end-to-end validation covers each fix.
 
 ## Install
 
 From the workspace root:
 
 ```bash
-cd /workspaces/scans-test
 python -m pip install -r requirements.txt
 ```
 
@@ -60,7 +81,7 @@ python -m pip install -r requirements.txt
 Use this order when scanning seriously:
 
 ```bash
-cd /workspaces/scans-test/overall
+cd overall
 python run.py --output-dir output
 ```
 
@@ -76,9 +97,8 @@ overall/output/results.json
 For a clean rerun from scratch, remove old JSON output first:
 
 ```bash
-cd /workspaces/scans-test
 find daily/output weekly/output monthly/output overall/output -type f -name '*.json' -delete
-cd /workspaces/scans-test/overall
+cd overall
 python run.py --output-dir output
 ```
 
@@ -159,7 +179,8 @@ Then inspect the timeframe metrics:
 
 ```text
 metrics.distance_to_pivot_pct
-  near 0 is best for entry. Too far above pivot means late/extended.
+  near 0 is best for entry. Larger magnitude (either direction)
+  lowers rank within the same score bucket after the Fix 1 sort update.
 
 metrics.recent_range_pct
   lower means tighter controlled action. Tightness is important for the reference-image pattern.
@@ -173,6 +194,18 @@ metrics.breakout_volume_ratio
 metrics.vertical_gain_pct
   confirms the first strong buying-force move.
 ```
+
+### Ranking tiebreaker (updated)
+
+Within each timeframe's `results.json`, matches are sorted by:
+
+1. `score` (higher wins)
+2. `breakout_volume_ratio` (higher wins)
+3. `abs(distance_to_pivot_pct)` (smaller wins — closer to pivot is better)
+
+Previously the third key preferred *larger* distances, which pushed
+already-extended stocks above fresh setups with the same score. That is
+fixed on weekly and monthly.
 
 Decision hierarchy:
 
@@ -189,21 +222,21 @@ BAD/damaged base                      = avoid
 Daily:
 
 ```bash
-cd /workspaces/scans-test/daily
+cd daily
 python run.py
 ```
 
 Weekly:
 
 ```bash
-cd /workspaces/scans-test/weekly
+cd weekly
 python run.py
 ```
 
 Monthly:
 
 ```bash
-cd /workspaces/scans-test/monthly
+cd monthly
 python run.py
 ```
 
@@ -212,7 +245,7 @@ python run.py
 Use all NSE stocks from inside the desired timeframe folder:
 
 ```bash
-cd /workspaces/scans-test/daily
+cd daily
 python run.py
 ```
 
@@ -258,14 +291,34 @@ Default worker count is automatic:
 min(64, max(10, CPU threads * 8))
 ```
 
+## Data Fetching Behavior
+
+On weekly and monthly, `YahooDataProvider.fetch_history` wraps each
+`yf.download` call in a retry loop:
+
+```text
+attempts       = 3 (default)
+backoff        = 0.75s, 1.5s between attempts (exponential)
+empty frame    = counts as a failure and triggers a retry
+exception      = caught, retried, and only bubbles as DataProviderError
+                 if every attempt raises
+persistent 429 = eventually returns [] (same as "no data" today), but only
+                 after the retries are exhausted
+```
+
+The scanner's public behavior is unchanged: it still sees either
+`list[Candle]` or a `DataProviderError`. The retry settings are
+constructor parameters (`max_retries`, `retry_backoff`) if you want to
+override them programmatically.
+
 ## Pine Scripts
 
 Place each Pine script on the matching TradingView timeframe:
 
 ```text
-Daily   -> /workspaces/scans-test/daily/five_star_setup.pine    on 1D chart
-Weekly  -> /workspaces/scans-test/weekly/five_star_setup.pine   on 1W chart
-Monthly -> /workspaces/scans-test/monthly/five_star_setup.pine  on 1M chart
+Daily   -> daily/five_star_setup.pine   on 1D chart
+Weekly  -> weekly/five_star_setup.pine  on 1W chart
+Monthly -> monthly/five_star_setup.pine on 1M chart
 ```
 
 Marker hierarchy:
@@ -295,9 +348,9 @@ Each timeframe scanner does the same job with timeframe-specific defaults:
 
 1. Load the NSE equity universe.
 2. Convert symbols to Yahoo format like `RELIANCE.NS`.
-3. Download OHLCV candles with `yfinance`.
+3. Download OHLCV candles with `yfinance` (with retry on empty/failed frames).
 4. Score every symbol in parallel.
-5. Write JSON output with matched setups only.
+5. Write JSON output atomically (`.tmp` → `os.replace`) so the file is never half-written.
 
 The strategy checks:
 
@@ -329,6 +382,18 @@ metrics.distance_to_pivot_pct
 metrics.breakout_volume_ratio
 metrics.recent_range_pct
 metrics.base_drawdown_pct
+```
+
+Scanner-level fields at the top of each `results.json`:
+
+```text
+total_requested         # symbols that were scanned
+total_with_data         # symbols that returned candles
+matches                 # number of matched setups in `results`
+errors                  # total number of per-symbol fetch errors
+error_details           # up to error_details_limit rows of {symbol, error}
+error_details_truncated # true if errors > error_details_limit
+error_details_limit     # current cap (25)
 ```
 
 Important fields in `overall/output/results.json`:
@@ -370,7 +435,7 @@ NEAR only                             = watchlist, not entry
 BAD                                   = avoid
 ```
 
-For the reference-image “early” view, use `--early-image-only`. It keeps:
+For the reference-image "early" view, use `--early-image-only`. It keeps:
 
 ```text
 EARLY        = strict pre-breakout entry
@@ -384,7 +449,7 @@ FT           = excluded from the early-image view because it is already moving
 Daily:
 
 ```bash
-cd /workspaces/scans-test/daily
+cd daily
 python -m unittest discover -v
 python -m py_compile run.py src/__init__.py src/models.py src/universe.py src/data.py src/strategy.py src/scanner.py config/__init__.py config/settings.py tests/__init__.py tests/fixtures.py tests/test_strategy.py tests/test_universe.py tests/test_scanner.py
 ```
@@ -392,23 +457,33 @@ python -m py_compile run.py src/__init__.py src/models.py src/universe.py src/da
 Weekly:
 
 ```bash
-cd /workspaces/scans-test/weekly
+cd weekly
 python -m unittest discover -v
 ```
 
 Monthly:
 
 ```bash
-cd /workspaces/scans-test/monthly
+cd monthly
 python -m unittest discover -v
 ```
 
 Overall:
 
 ```bash
-cd /workspaces/scans-test/overall
+cd overall
 python -m unittest discover -v
 python run.py --symbols "RELIANCE,TCS,HEG" --max-workers 3 --output-dir output/smoke
+```
+
+Current test counts (unchanged by the recent fixes):
+
+```text
+daily     10 / 10
+weekly    10 / 10
+monthly   10 / 10
+overall    5 /  5
+total     35 / 35
 ```
 
 ## Pending Manual Work
@@ -424,3 +499,20 @@ Nothing is pending in the Python organization itself. The remaining manual work 
 ```
 
 The scanner finds setups. It does not replace risk management, position sizing, or manual chart review.
+
+## Known follow-up work (not in this round)
+
+The following items are real but deliberately **not** addressed in the
+weekly/monthly fix rounds, either because they are daily-only or because
+they are bigger refactors that deserve their own PR:
+
+```text
+daily only     Identical sort bug in daily/src/scanner.py
+daily only     Missing post_peak_drawdown guard in daily strategy
+daily only     Reason string labels on daily
+refactor       data.py/scanner.py/universe.py/models.py are byte-identical
+               across daily/weekly/monthly; a shared common/ package would
+               eliminate the triplication
+refactor       Per-symbol yf.download instead of batched group_by="ticker"
+edge case      --validate-symbols is a silent no-op when nsetools is missing
+```
