@@ -40,8 +40,6 @@ def analyze_five_star_setup(candles: list[Candle]) -> SetupSignal:
         )
 
     closes = [candle.close for candle in candles]
-    highs = [candle.high for candle in candles]
-    lows = [candle.low for candle in candles]
     volumes = [candle.volume for candle in candles]
 
     latest = candles[-1]

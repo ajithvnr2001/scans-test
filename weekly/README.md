@@ -15,6 +15,28 @@ This repo scans NSE stocks for the chart pattern shown in the reference images:
 The important change is that the scanner now defaults to the full NSE equity universe.
 It does not use a hard-coded single stock or fixed group of stocks.
 
+## Recent correctness fixes
+
+The weekly scanner received six fixes in its most recent update. See the
+top-level [`FIXES.md`](../FIXES.md) for full detail. Highlights specific
+to weekly:
+
+```text
+1. Sort key. Near-pivot setups now rank above already-extended breakouts
+   on ties (same score, same volume ratio). Score still dominates.
+2. Retry. fetch_history retries empty/failed Yahoo frames up to 3 times
+   with exponential backoff (0.75s, 1.5s). Silent drops from transient
+   rate limiting are much rarer.
+3. Reason string. The 50-MA reason reads "price is above the 50-week
+   average" instead of "50-day average".
+4. Atomic writes. results.json is written via .tmp + os.replace so
+   Ctrl+C mid-write leaves the previous complete file intact.
+5. Truncation surfaced. results.json now includes
+   error_details_truncated (bool) and error_details_limit (25).
+6. Dead locals. Unused highs/lows list-comprehensions were removed from
+   analyze_five_star_setup. No behavior change.
+```
+
 ## Project Structure
 
 ```text
@@ -55,10 +77,13 @@ Default behavior:
 - Downloads 5 years of weekly candles by default: `period=5y`, `interval=1wk`.
 - Scores every stock in parallel. Worker count is automatic:
   `min(64, max(10, CPU threads * 8))`.
-- Writes `output/results.json`.
+- Writes `output/results.json` atomically (via a `.tmp` sibling + `os.replace`).
 - Returns only actionable setups by default: near breakout, breakout today, or recent follow-through.
 - Adds `early_entry` for clean weekly candidates before breakout. It requires a strong prior move,
   tight weekly base, volume dry-up, a strong close near the pivot, and no post-peak crash damage.
+- Retries up to 3 Yahoo fetches per symbol on empty/failed responses
+  (exponential backoff, ~2.25s worst case per stuck symbol). Reduces
+  non-reproducibility when Yahoo rate-limits the full universe scan.
 
 Weekly tuning:
 
@@ -66,6 +91,18 @@ Weekly tuning:
 - Early entry must be within 2% below pivot.
 - Recent weekly range must be 10% or tighter.
 - Post-peak drawdown damage is checked over 45 weeks.
+
+### Match ordering
+
+Within `results.json`, matches are sorted by:
+
+1. `score` (higher wins)
+2. `breakout_volume_ratio` (higher wins)
+3. `abs(distance_to_pivot_pct)` (smaller wins — closer to pivot is better)
+
+Previously the third key preferred *larger* distances, which pushed
+already-extended stocks above fresh-at-pivot setups with the same
+score. That is fixed as of the latest update.
 
 ## Useful Commands
 
@@ -110,8 +147,10 @@ python run.py --max-workers 32
 Use this file on a TradingView `1W` chart:
 
 ```text
-/workspaces/scans-test/weekly/five_star_setup.pine
+weekly/five_star_setup.pine
 ```
+
+(Path is relative to the repo root.)
 
 Default Pine display:
 
@@ -148,7 +187,7 @@ Weekly NEAR only                        = watchlist, not entry
 
 The scanner scores each stock on:
 
-- Price above key moving averages.
+- Price above key moving averages (50-week MA).
 - Prior vertical move showing strong buying force.
 - Controlled pause instead of a deep crash.
 - Tight/contraction behavior in the base.
@@ -174,6 +213,18 @@ metrics.base_drawdown_pct
 metrics.post_peak_drawdown_pct
 ```
 
+Scanner-level fields at the top of `results.json`:
+
+```text
+total_requested
+total_with_data
+matches
+errors
+error_details            # up to 25 {symbol, error} entries
+error_details_truncated  # true if total errors > 25
+error_details_limit      # always 25 today
+```
+
 Use `overall/output/results.json` for final priority because it combines weekly with daily and monthly confirmation.
 
 ## Validate
@@ -184,3 +235,5 @@ The tests are offline and use synthetic candles shaped like the reference charts
 python -m unittest discover -v
 python -m py_compile run.py src/__init__.py src/models.py src/universe.py src/data.py src/strategy.py src/scanner.py config/__init__.py config/settings.py tests/__init__.py tests/fixtures.py tests/test_strategy.py tests/test_universe.py tests/test_scanner.py
 ```
+
+Current count: **10 / 10 tests pass**.

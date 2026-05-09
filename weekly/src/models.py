@@ -45,13 +45,21 @@ class ScanSummary:
     matches: tuple[StockScan, ...]
     errors: tuple[dict[str, str], ...]
 
+    ERROR_DETAIL_LIMIT = 25
+
     def to_dict(self) -> dict[str, Any]:
+        # error_details is capped to avoid bloating results.json when Yahoo
+        # has a bad day. We surface the truncation explicitly so downstream
+        # readers do not silently assume error_details contains every error.
+        truncated = len(self.errors) > self.ERROR_DETAIL_LIMIT
         return {
             "total_requested": self.total_requested,
             "total_with_data": self.total_with_data,
             "matches": len(self.matches),
             "errors": len(self.errors),
             "results": [match.to_dict() for match in self.matches],
-            "error_details": list(self.errors[:25]),
+            "error_details": list(self.errors[: self.ERROR_DETAIL_LIMIT]),
+            "error_details_truncated": truncated,
+            "error_details_limit": self.ERROR_DETAIL_LIMIT,
         }
 

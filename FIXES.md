@@ -363,7 +363,8 @@ normalization, and universe resolution all work end-to-end.
 ## What this PR deliberately does NOT fix
 
 These are real issues flagged during the review, but left out of this PR
-to keep the change focused:
+to keep the change focused. Items marked ✅ have since been addressed in
+Round 2 below; the rest remain open.
 
 1. **Identical sort bug in `daily/src/scanner.py`.** Same fix applies, but
    daily is out of scope.
@@ -372,16 +373,22 @@ to keep the change focused:
    this PR had to patch the same code twice). A shared `common/` package
    would eliminate this; that's a larger refactor for its own PR.
 3. **`--validate-symbols` silent no-op** when `nsetools` is missing.
-4. **Non-atomic file writes** in `run.py` — a Ctrl+C mid-write leaves
-   corrupt JSON.
+4. ✅ **Non-atomic file writes** in `run.py` — a Ctrl+C mid-write leaves
+   corrupt JSON. **Fixed in Round 2.**
 5. **`_best_prior_gain` is O(N²)** — correct, just slow.
 6. **Per-symbol `yf.download` instead of batched.** Retry helps with
    rate-limit symptoms; batching would reduce rate-limit frequency at the
    source. Much larger change.
 7. **Daily's missing `post_peak_drawdown` guard.** Daily-only bug.
 8. **Reason string labels in daily.** Daily-only.
+9. ✅ **`error_details` silently truncated at 25 rows.** **Fixed in
+   Round 2** — `error_details_truncated` and `error_details_limit`
+   fields now surface the truncation.
+10. ✅ **Unused `highs` / `lows` locals in `analyze_five_star_setup`.**
+    **Fixed in Round 2** — dead code removed.
 
-All of these are tracked and can be addressed in follow-up PRs.
+All of the remaining items are tracked and can be addressed in
+follow-up PRs.
 
 ---
 
@@ -395,3 +402,216 @@ All of these are tracked and can be addressed in follow-up PRs.
 - [x] Focused validation of each fix passes
 - [x] Error handling preserves the `DataProviderError` contract
 - [x] No logs/output format changes beyond the reason-string fix
+
+---
+
+# Round 2 — robustness, JSON transparency, and cleanup
+
+A follow-up pass addressing smaller issues flagged during review. Same
+scope (weekly + monthly only). All changes are behavior-preserving on
+the happy path; they only matter on failure paths (atomic write, error
+truncation).
+
+## Fix 4 — Atomic JSON writes
+
+**File:** `weekly/run.py`, `monthly/run.py`
+**Severity:** Medium (a Ctrl+C mid-write currently corrupts output)
+
+### The bug
+
+```python
+output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+```
+
+`Path.write_text` is not atomic. If the process is killed (Ctrl+C, OOM,
+crash) after the file is truncated but before the new contents are fully
+flushed, `results.json` ends up as a half-written file. The next run of
+`overall/run.py --combine-only` (which calls `json.loads` on each
+timeframe file) will then fail with a cryptic `JSONDecodeError`.
+
+On a full NSE-universe scan with retries, this is a multi-minute
+window. It is realistic to interrupt it.
+
+### The fix
+
+```python
+import os
+...
+output_path = Path(args.output)
+output_path.parent.mkdir(parents=True, exist_ok=True)
+# Atomic write: write to a temp file next to the target, then rename.
+tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+os.replace(tmp_path, output_path)
+```
+
+Why this works:
+
+- Writing to `results.json.tmp` first means the in-progress state never
+  shares a name with the final artifact.
+- `os.replace` is guaranteed atomic on POSIX and Windows for same-
+  filesystem renames. Consumers see either the previous `results.json`
+  or the new one, never an empty or truncated one.
+- The `.tmp` sibling lives in the same directory, so the rename stays
+  on the same filesystem (atomicity is not guaranteed across mounts).
+
+### What does not change
+
+- The output path, JSON structure, printed-to-stdout payload, exit code,
+  and `output_path.parent.mkdir` behavior are all unchanged.
+- A dangling `results.json.tmp` left by a previous crash is silently
+  overwritten on the next run's write phase.
+
+### Validation
+
+```
+== Fix A: atomic write on weekly/run.py ==
+[PASS] run.py uses os.replace to finalize the write
+[PASS] run.py writes to a .tmp sibling before renaming
+[PASS] run.py imports os for the atomic rename
+[PASS] dry-run exits 0 (got 0)
+[PASS] dry-run reports 2 symbols (got 2)
+```
+
+End-to-end on disk:
+
+```
+wrote /projects/sandbox/scans-test/weekly/output/validate_round2/results.json
+matches=1  errors=0  truncated=False  limit=25
+[PASS] atomic write + truncation metadata verified on disk
+```
+
+Both weekly and monthly verified.
+
+---
+
+## Fix 5 — Error truncation is no longer silent
+
+**File:** `weekly/src/models.py`, `monthly/src/models.py`
+**Severity:** Low (data readability, not correctness)
+
+### The bug
+
+```python
+def to_dict(self) -> dict[str, Any]:
+    return {
+        ...
+        "errors": len(self.errors),
+        "results": [...],
+        "error_details": list(self.errors[:25]),
+    }
+```
+
+`error_details` is silently capped at 25 rows. The `errors` integer is
+the full total, but a reader of `results.json` who sees
+`errors: 200, error_details: [<25 rows>]` has no way to tell whether the
+first 25 is a sample, the worst offenders, or everything there is. In
+practice it is just the first 25 in insertion order (which, because of
+`ThreadPoolExecutor`, is nondeterministic).
+
+### The fix
+
+```python
+@dataclass(frozen=True)
+class ScanSummary:
+    ...
+    ERROR_DETAIL_LIMIT = 25
+
+    def to_dict(self) -> dict[str, Any]:
+        truncated = len(self.errors) > self.ERROR_DETAIL_LIMIT
+        return {
+            ...
+            "error_details": list(self.errors[: self.ERROR_DETAIL_LIMIT]),
+            "error_details_truncated": truncated,
+            "error_details_limit": self.ERROR_DETAIL_LIMIT,
+        }
+```
+
+Two tiny improvements:
+
+1. The cap is a class constant (`ERROR_DETAIL_LIMIT`) instead of a
+   magic `25` literal buried in a method body. Tests and downstream
+   readers can reference `ScanSummary.ERROR_DETAIL_LIMIT` rather than
+   hard-coding the number.
+2. Two new fields in the JSON:
+   - `error_details_truncated: bool` — `True` if the full error list
+     didn't fit.
+   - `error_details_limit: int` — the cap that was applied.
+
+### What does not change
+
+- The existing `errors` (count) and `error_details` (list) fields are
+  unchanged.
+- Consumers who only read `errors` and `error_details` still work; the
+  two new fields are additive.
+
+### Validation
+
+```
+== Fix B: error_details truncation surfaced (weekly) ==
+[PASS] error_details_truncated is False when errors fit under the limit
+[PASS] error_details_limit equals class constant (25)
+[PASS] all 5 error details preserved (got 5)
+[PASS] error_details_truncated is True when errors exceed the limit
+[PASS] error_details capped at 25 rows (got 25)
+[PASS] errors count reflects the full total, not the truncated list
+```
+
+All six pass on both weekly and monthly.
+
+---
+
+## Fix 6 — Dead `highs` / `lows` locals removed
+
+**File:** `weekly/src/strategy.py`, `monthly/src/strategy.py`
+**Severity:** Cleanup (no behavior change)
+
+### The bug
+
+```python
+closes = [candle.close for candle in candles]
+highs = [candle.high for candle in candles]   # never used
+lows = [candle.low for candle in candles]     # never used
+volumes = [candle.volume for candle in candles]
+```
+
+`highs` and `lows` were computed at the top of `analyze_five_star_setup`
+but never read. (The `highs` local inside `_breakout_stage` is a
+different scope and remains legitimate — it's used to compute the
+rolling pivot.)
+
+Two tiny costs:
+
+- A ~250-item list comprehension is allocated twice per stock per
+  timeframe, for nothing.
+- Readers of the code waste a moment wondering what high/low features
+  are being used that they can't find.
+
+### The fix
+
+Delete the two unused lines. That's it.
+
+### Validation
+
+```
+== Fix C: dead locals removed (weekly/src/strategy.py) ==
+[PASS] dead `highs` and `lows` list-comprehensions removed from analyze_five_star_setup
+[PASS] _breakout_stage still computes its own highs (unchanged)
+```
+
+Same on monthly. All 35 existing unit tests still pass.
+
+---
+
+## Round 2 validation summary
+
+| Layer | Scope | Result |
+|---|---|---|
+| Existing unit tests | weekly + monthly + daily + overall | **35 / 35 pass** |
+| Round-2 focused checks | 14 checks × 2 timeframes | **28 / 28 pass** |
+| End-to-end on-disk write | 2 timeframes (fake provider, real file I/O) | **4 / 4 assertions pass** |
+| CLI smoke test | `run.py --dry-run` on weekly + monthly | Works |
+
+Running totals across both rounds: **6 fixes, 57 validation checks, 0
+regressions**.
+
