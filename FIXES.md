@@ -642,10 +642,15 @@ Each key is sorted ascending, so "lower is better":
 ```
 1. score                       (negated -> higher score wins)
 2. stage tier                  BO/EARLY (0) > NEAR (1) > FT (2)
-3. breakout_volume_ratio       (negated -> higher volume wins)
-4. distance bucket             asymmetric; see below
+3. distance bucket             asymmetric; see below
+4. breakout_volume_ratio       (negated -> higher volume wins, within bucket)
 5. |distance_to_pivot_pct|     within-bucket tiebreaker, closer wins
 ```
+
+Distance bucket is placed **above** volume on purpose: a clean setup
+at or just above pivot should not be displaced by a high-volume
+already-extended name of the same score and stage. Within the same
+bucket, volume still breaks the tie.
 
 ### Stage tier
 
@@ -698,29 +703,44 @@ scanning.
 
 Score still dominates — that's how the original behavior is preserved.
 
-At **equal score**:
+At **equal score and same stage tier**, the distance bucket now wins
+over volume:
 
 | Stock | stage | vol | dist | tier | bucket | rank |
 |---|---|---|---|---|---|---|
-| BO_PLUS_1       | breakout_today | 2.0 | +1.0% | 0 | 0 | **1st** |
-| EARLY_MINUS_1   | early_entry    | 2.0 | -1.0% | 0 | 1 | 2nd |
-| NEAR_MINUS_1    | near_breakout  | 1.0 | -1.0% | 1 | 1 | 3rd |
-| FT_PLUS_1       | follow_through | 2.0 | +1.0% | 2 | 0 | 4th |
+| CLEAN_LOWVOL_PLUS_1    | breakout_today | 1.5 | +1.0% | 0 | 0 | **1st** |
+| EXTENDED_HIVOL_PLUS_7  | breakout_today | 5.0 | +7.0% | 0 | 2 | 2nd |
 
-This is the key behavior change from Round 1. Under the old symmetric
-`abs()` sort, `BO_PLUS_1` and `EARLY_MINUS_1` would tie on distance and
-fall back to input order. Now the asymmetric bucket puts the confirmed
-breakout first, as it should.
+This is the key behavior change from the previous round. Previously
+the high-volume extended name would have beaten the clean low-volume
+setup because volume sat above the distance bucket. Now the clean
+at-pivot setup wins. Volume still matters, but only as a tiebreaker
+inside the same bucket.
+
+Full-hierarchy example with five names at equal score:
+
+| Stock | stage | vol | dist | tier | bucket | rank |
+|---|---|---|---|---|---|---|
+| BO_MEDVOL_CLEAN       | breakout_today | 2.0 | +1.0%  | 0 | 0 | **1st** |
+| BO_LOWVOL_EXTENDED    | breakout_today | 1.0 | +10.0% | 0 | 3 | 2nd |
+| NEAR_HIVOL_BUCKET0    | near_breakout  | 5.0 | +0.2%  | 1 | 0 | 3rd |
+| NEAR_AT_MINUS_1       | near_breakout  | 2.0 | -1.0%  | 1 | 1 | 4th |
+| FT_HIVOL_CLEAN        | follow_through | 5.0 | +1.0%  | 2 | 0 | 5th |
+
+- Both tier-0 names come before all tier-1, which come before FT.
+- Inside tier 0, the clean BO beats the extended BO regardless of
+  volume.
+- Inside tier 1, the higher-bucket NEAR beats the lower-bucket NEAR.
 
 ### The review scenario, explicitly
 
 The reviewer flagged: *"a stock just above pivot with volume
 confirmation should beat one just below pivot."* At equal score:
 
-| Stock | stage | vol | dist | tier | vol key | bucket | rank |
-|---|---|---|---|---|---|---|---|
-| CONFIRMED_PLUS_1 | breakout_today | 2.5 | +1% | 0 | -2.5 | 0 | **1st** |
-| NEAR_MINUS_1     | near_breakout  | 1.0 | -1% | 1 | -1.0 | 1 | 2nd |
+| Stock | stage | vol | dist | tier | bucket | rank |
+|---|---|---|---|---|---|---|
+| CONFIRMED_PLUS_1 | breakout_today | 2.5 | +1% | 0 | 0 | **1st** |
+| NEAR_MINUS_1     | near_breakout  | 1.0 | -1% | 1 | 1 | 2nd |
 
 Wins at the **tier** level (0 < 1) before the bucket or volume keys
 even matter. Exactly the intended priority.
@@ -736,26 +756,21 @@ even matter. Exactly the intended priority.
 
 ### Validation
 
-All five levels of the hierarchy plus the review scenario were
-verified with isolated test cases:
+All five levels of the hierarchy plus the key behavior change and the
+review scenario were verified with isolated test cases:
 
 ```
-== weekly: hierarchical sort ==
-[PASS] Level 1: score 11 beats score 8 regardless of stage/volume/distance
-[PASS] Level 2: BO/EARLY are top two
-[PASS] Level 2: NEAR is third
-[PASS] Level 2: FT is last
-[PASS] Level 3: higher volume wins within same tier+bucket
-[PASS] Level 4: +1% (bucket 0) ranks above -1% (bucket 1)
-[PASS] Level 4: -1% (bucket 1) ranks above +5% (bucket 2)
-[PASS] Level 4: +5% (bucket 2) ranks above extended/too-far
-[PASS] Level 4: +15% and -5% share bucket 3 (last two positions)
-[PASS] Level 5: +0.5% closer-to-pivot wins within bucket 0
-[PASS] Review scenario: confirmed BO at +1% beats NEAR at -1%
-[PASS] Bucket asymmetry: +1% (bucket 0) beats -1% (bucket 1) at same tier/score/volume
+== weekly: strict-entry sort hierarchy ==
+[PASS] D: score dominates (score-11 FT beats score-8 BO)
+[PASS] E: stage tier beats bucket (BO in bucket 2 still beats NEAR in bucket 1)
+[PASS] B: clean BO at +1% (low vol) now beats extended BO at +7% (high vol)
+[PASS] B: clean BO at +2% (low vol) now beats +15% extended BO (high vol)
+[PASS] C: within bucket 0, higher volume wins even at slightly larger |dist|
+[PASS] A: full hierarchy order is correct
+[PASS] Regression: BO at +1% (bucket 0) beats EARLY at -1% (bucket 1) at same tier/score
 ```
 
-Same 12 checks pass on monthly (24 total).
+Same 7 checks pass on monthly (14 total).
 
 End-to-end through real `run_scan` on fixtures:
 
@@ -773,7 +788,18 @@ Score still dominates; no regression on the existing 35-test suite.
 | Layer | Scope | Result |
 |---|---|---|
 | Existing unit tests | weekly + monthly + daily + overall | **35 / 35 pass** |
-| Hierarchical-sort focused checks | 12 checks × 2 timeframes | **24 / 24 pass** |
+| Strict-entry focused checks | 7 checks × 2 timeframes | **14 / 14 pass** |
 | End-to-end `run_scan` on fixtures | weekly + monthly | Correct order |
 
-Running totals across all three rounds: **7 fixes, 81 validation checks, 0 regressions**.
+Running totals across all three rounds: **7 fixes, 71 validation checks, 0 regressions**.
+
+### Note on the tuning tradeoff
+
+An earlier iteration of Round 3 placed volume **above** the distance
+bucket in the sort key. That variant was logically fine for a
+mixed entry/follow-through workflow, but for this scanner's
+"image-style clean entry" purpose, a clean low-volume setup at pivot
+should not be displaced by a high-volume already-extended name. The
+final version in this PR therefore ranks the distance bucket above
+volume, with volume kept as an in-bucket tiebreaker so demand
+confirmation still matters when two stocks sit in the same bucket.

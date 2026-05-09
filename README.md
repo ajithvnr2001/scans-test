@@ -63,7 +63,7 @@ diffs, and validation evidence. Summary:
 | 4 | `results.json` is now written atomically via a `.tmp` file + `os.replace`. Ctrl+C mid-write no longer corrupts the file. | `weekly/run.py`, `monthly/run.py` |
 | 5 | `error_details` truncation (previously silent at 25 rows) is now surfaced via `error_details_truncated` and `error_details_limit` fields. | `weekly/src/models.py`, `monthly/src/models.py` |
 | 6 | Unused `highs` / `lows` locals removed from `analyze_five_star_setup`. Pure cleanup, no behavior change. | `weekly/src/strategy.py`, `monthly/src/strategy.py` |
-| 7 | Ranking upgraded to a five-level trading-priority hierarchy: **score → stage tier (BO/EARLY > NEAR > FT) → volume → asymmetric distance bucket → proximity**. A confirmed BO at +1% now correctly ranks above a NEAR at -1%. | `weekly/src/scanner.py`, `monthly/src/scanner.py` |
+| 7 | Ranking upgraded to a five-level trading-priority hierarchy: **score → stage tier (BO/EARLY > NEAR > FT) → asymmetric distance bucket → volume → proximity**. A clean setup at pivot (even with low volume) now correctly ranks above a high-volume but already-extended setup of the same score. | `weekly/src/scanner.py`, `monthly/src/scanner.py` |
 
 All 35 unit tests pass and targeted end-to-end validation covers each fix.
 
@@ -183,8 +183,10 @@ metrics.distance_to_pivot_pct
   Near 0 is best for entry. The new ranking is asymmetric: +0% to +3%
   (fresh above pivot) ranks above -3% to 0% (just below), which ranks
   above +3% to +8% (acceptable but later), which ranks above anything
-  more extended. Stage (BO/EARLY vs NEAR vs FT) sits above this key,
-  so a confirmed BO near pivot correctly outranks a NEAR just below.
+  more extended. Distance bucket sits ABOVE volume, so a clean setup
+  at pivot is not displaced by a high-volume but already-extended name.
+  Stage (BO/EARLY vs NEAR vs FT) sits above both, so a confirmed BO
+  near pivot correctly outranks a NEAR just below.
 
 metrics.recent_range_pct
   lower means tighter controlled action. Tightness is important for the reference-image pattern.
@@ -202,13 +204,13 @@ metrics.vertical_gain_pct
 ### Ranking tiebreaker (trading-priority hierarchy)
 
 Within each timeframe's `results.json`, matches are sorted by a
-five-level hierarchy designed to surface the best entries first:
+five-level hierarchy designed to surface the cleanest entries first:
 
 ```
 1. score                    (higher wins)              primary conviction
 2. stage tier               BO/EARLY (0) > NEAR (1) > FT (2)
-3. breakout_volume_ratio    (higher wins)              demand confirmation
-4. distance bucket          asymmetric, see below      entry quality
+3. distance bucket          asymmetric, see below      entry quality
+4. breakout_volume_ratio    (higher wins)              demand confirmation
 5. |distance_to_pivot_pct|  (closer wins)              within-bucket tiebreaker
 ```
 
@@ -223,15 +225,18 @@ bucket 3  anything else   last    > +8% extended or < -3% too far below
 
 Why this matters:
 
+- Distance bucket sits **above** volume. A clean setup at or just
+  above pivot will not be displaced by a high-volume but already-
+  extended stock of the same score. Within the same bucket, volume
+  still breaks the tie.
 - Previously the tiebreaker was `abs(distance_to_pivot_pct)`, which
-  treated `-3%` and `+3%` as equivalent. For a confirmed-breakout
-  scanner, a stock just above pivot with volume is strictly better
-  than one still below pivot, and the new rule captures that.
-- Stage tier sits above volume/distance, so a NEAR with huge volume
-  does not outrank a confirmed BO at the same score.
+  treated `-3%` and `+3%` as equivalent. That did not match how a
+  breakout trader actually reads the tape.
+- Stage tier sits above bucket, so a NEAR with a perfect-looking
+  bucket still does not outrank a confirmed BO at the same score.
 - FT is demoted below NEAR on purpose: FT is already moving and is
-  a lower-priority *entry* than a fresh setup at the same score, even
-  though it is technically confirmed.
+  a lower-priority *entry* than a fresh setup at the same score,
+  even though it is technically confirmed.
 
 Score is still the primary key — a score-11 FT still ranks above a
 score-8 BO, so the overall "best setup wins" intuition is preserved.
