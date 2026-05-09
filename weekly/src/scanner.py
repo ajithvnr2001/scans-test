@@ -97,19 +97,27 @@ def run_scan(
             if match:
                 matches.append(match)
 
-    # Trading-priority sort (each key ascending, so "lower = better"):
+    # Strict "clean entry only" trading-priority sort.
+    # Each key is ascending (lower = better):
     #   1. score desc                 primary conviction
     #   2. stage tier                 BO/EARLY > NEAR > FT > other
-    #   3. breakout volume desc       confirmed demand beats weak volume
-    #   4. distance bucket            asymmetric: just-above-pivot beats
-    #                                  just-below, extended ranks last
-    #   5. |distance_to_pivot_pct|    within-bucket tiebreaker; closer wins
+    #   3. distance bucket            pivot quality:
+    #                                   0% to +3% = best (fresh BO at pivot)
+    #                                  -3% to  0% = watch (just below)
+    #                                  +3% to +8% = acceptable but extending
+    #                                  else       = extended/too far below
+    #   4. breakout volume desc       within-bucket: higher volume wins
+    #   5. |distance_to_pivot_pct|    final tiebreaker: closer wins
+    #
+    # Distance bucket is placed ABOVE volume so a clean setup at/just
+    # above pivot is not displaced by a high-volume but already-extended
+    # name. Within the same bucket, volume still matters.
     matches.sort(
         key=lambda item: (
             -item.signal.score,
             _STAGE_TIER.get(item.signal.stage, 99),
-            -item.signal.metrics.get("breakout_volume_ratio", 0),
             _distance_bucket(item.signal.metrics.get("distance_to_pivot_pct", 100)),
+            -item.signal.metrics.get("breakout_volume_ratio", 0),
             abs(item.signal.metrics.get("distance_to_pivot_pct", 100)),
         ),
     )

@@ -22,10 +22,11 @@ top-level [`FIXES.md`](../FIXES.md) for full detail. Highlights specific
 to monthly:
 
 ```text
-1. Sort key. Matches are now ordered by a five-level trading-priority
-   hierarchy: score -> stage tier (BO/EARLY > NEAR > FT) -> volume ->
-   asymmetric distance bucket -> proximity. A confirmed BO at +1%
-   correctly ranks above a NEAR at -1%. Score still dominates.
+1. Sort key. Matches are now ordered by a five-level strict-entry
+   hierarchy: score -> stage tier (BO/EARLY > NEAR > FT) ->
+   asymmetric distance bucket -> volume -> proximity. A clean
+   low-volume BO at pivot correctly ranks above a high-volume but
+   already-extended BO of the same score. Score still dominates.
 2. Retry. fetch_history retries empty/failed Yahoo frames up to 3 times
    with exponential backoff (0.75s, 1.5s). Silent drops from transient
    rate limiting are much rarer.
@@ -97,24 +98,25 @@ Monthly tuning:
 ### Match ordering
 
 Within `results.json`, matches are sorted by a five-level
-trading-priority hierarchy:
+strict-entry hierarchy:
 
 ```
 1. score                    (higher wins)
 2. stage tier               BO/EARLY (0) > NEAR (1) > FT (2)
-3. breakout_volume_ratio    (higher wins)
-4. distance bucket          asymmetric:
+3. distance bucket          asymmetric:
                               0%   to  +3%   best
                              -3%   to   0%   watch
                              +3%   to  +8%   later
                              extended       last
+4. breakout_volume_ratio    (higher wins) -- tiebreaker within a bucket
 5. |distance_to_pivot_pct|  within-bucket tiebreaker (closer wins)
 ```
 
-The asymmetric bucket captures the fact that a confirmed breakout
-just above pivot is strictly better than one still below pivot, even
-though both are "close" to the pivot in absolute terms. Score is
-still the primary key, so a high-score FT will beat a low-score BO.
+Distance bucket sits above volume, so a clean setup at or just
+above pivot will not be displaced by a high-volume but already-
+extended stock of the same score. Within the same bucket, volume
+still breaks the tie. Score is still the primary key, so a
+high-score FT will beat a low-score BO.
 
 ## Useful Commands
 
