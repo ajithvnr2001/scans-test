@@ -51,7 +51,7 @@ scans-test/
 
 ## Recent Correctness Fixes (weekly + monthly)
 
-The weekly and monthly scanners received six targeted correctness and
+The weekly and monthly scanners received seven targeted correctness and
 robustness fixes. See [`FIXES.md`](./FIXES.md) for in-depth reasoning,
 diffs, and validation evidence. Summary:
 
@@ -63,6 +63,7 @@ diffs, and validation evidence. Summary:
 | 4 | `results.json` is now written atomically via a `.tmp` file + `os.replace`. Ctrl+C mid-write no longer corrupts the file. | `weekly/run.py`, `monthly/run.py` |
 | 5 | `error_details` truncation (previously silent at 25 rows) is now surfaced via `error_details_truncated` and `error_details_limit` fields. | `weekly/src/models.py`, `monthly/src/models.py` |
 | 6 | Unused `highs` / `lows` locals removed from `analyze_five_star_setup`. Pure cleanup, no behavior change. | `weekly/src/strategy.py`, `monthly/src/strategy.py` |
+| 7 | Ranking upgraded to a five-level trading-priority hierarchy: **score → stage tier (BO/EARLY > NEAR > FT) → volume → asymmetric distance bucket → proximity**. A confirmed BO at +1% now correctly ranks above a NEAR at -1%. | `weekly/src/scanner.py`, `monthly/src/scanner.py` |
 
 All 35 unit tests pass and targeted end-to-end validation covers each fix.
 
@@ -179,8 +180,11 @@ Then inspect the timeframe metrics:
 
 ```text
 metrics.distance_to_pivot_pct
-  near 0 is best for entry. Larger magnitude (either direction)
-  lowers rank within the same score bucket after the Fix 1 sort update.
+  Near 0 is best for entry. The new ranking is asymmetric: +0% to +3%
+  (fresh above pivot) ranks above -3% to 0% (just below), which ranks
+  above +3% to +8% (acceptable but later), which ranks above anything
+  more extended. Stage (BO/EARLY vs NEAR vs FT) sits above this key,
+  so a confirmed BO near pivot correctly outranks a NEAR just below.
 
 metrics.recent_range_pct
   lower means tighter controlled action. Tightness is important for the reference-image pattern.
@@ -195,17 +199,42 @@ metrics.vertical_gain_pct
   confirms the first strong buying-force move.
 ```
 
-### Ranking tiebreaker (updated)
+### Ranking tiebreaker (trading-priority hierarchy)
 
-Within each timeframe's `results.json`, matches are sorted by:
+Within each timeframe's `results.json`, matches are sorted by a
+five-level hierarchy designed to surface the best entries first:
 
-1. `score` (higher wins)
-2. `breakout_volume_ratio` (higher wins)
-3. `abs(distance_to_pivot_pct)` (smaller wins — closer to pivot is better)
+```
+1. score                    (higher wins)              primary conviction
+2. stage tier               BO/EARLY (0) > NEAR (1) > FT (2)
+3. breakout_volume_ratio    (higher wins)              demand confirmation
+4. distance bucket          asymmetric, see below      entry quality
+5. |distance_to_pivot_pct|  (closer wins)              within-bucket tiebreaker
+```
 
-Previously the third key preferred *larger* distances, which pushed
-already-extended stocks above fresh setups with the same score. That is
-fixed on weekly and monthly.
+The distance buckets are deliberately **asymmetric**:
+
+```
+bucket 0   0%   to  +3%   best    fresh BO at or just above pivot
+bucket 1  -3%   to   0%   watch   pressed to pivot, not yet through
+bucket 2  +3%   to  +8%   later   confirmed but starting to extend
+bucket 3  anything else   last    > +8% extended or < -3% too far below
+```
+
+Why this matters:
+
+- Previously the tiebreaker was `abs(distance_to_pivot_pct)`, which
+  treated `-3%` and `+3%` as equivalent. For a confirmed-breakout
+  scanner, a stock just above pivot with volume is strictly better
+  than one still below pivot, and the new rule captures that.
+- Stage tier sits above volume/distance, so a NEAR with huge volume
+  does not outrank a confirmed BO at the same score.
+- FT is demoted below NEAR on purpose: FT is already moving and is
+  a lower-priority *entry* than a fresh setup at the same score, even
+  though it is technically confirmed.
+
+Score is still the primary key — a score-11 FT still ranks above a
+score-8 BO, so the overall "best setup wins" intuition is preserved.
 
 Decision hierarchy:
 

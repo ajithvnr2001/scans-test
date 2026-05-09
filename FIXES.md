@@ -615,3 +615,165 @@ Same on monthly. All 35 existing unit tests still pass.
 Running totals across both rounds: **6 fixes, 57 validation checks, 0
 regressions**.
 
+
+
+
+---
+
+# Round 3 — hierarchical trading-priority ranking
+
+Feedback on Round 1's sort key was: `abs(distance_to_pivot_pct)` is
+symmetric and treats `-3%` identical to `+3%`. For pure early-entry
+scanning that is fine, but for a confirmed-breakout scan a stock just
+above pivot is strictly better than one just below pivot, especially
+if volume confirms. Fix 1's sort was safer than the old one but not
+yet the best-possible trading-priority logic.
+
+## Fix 7 — Stage tier + asymmetric distance bucket
+
+**File:** `weekly/src/scanner.py`, `monthly/src/scanner.py`
+**Severity:** Medium (affects ranking of every scan run; no match
+inclusion changes)
+
+### The new sort hierarchy
+
+Each key is sorted ascending, so "lower is better":
+
+```
+1. score                       (negated -> higher score wins)
+2. stage tier                  BO/EARLY (0) > NEAR (1) > FT (2)
+3. breakout_volume_ratio       (negated -> higher volume wins)
+4. distance bucket             asymmetric; see below
+5. |distance_to_pivot_pct|     within-bucket tiebreaker, closer wins
+```
+
+### Stage tier
+
+```python
+_STAGE_TIER = {
+    "early_entry":    0,    # strict pre-BO entry, tight base, volume dry-up
+    "breakout_today": 0,    # fresh BO; same conviction as a clean EARLY
+    "near_breakout":  1,    # pressed to pivot, not yet through
+    "follow_through": 2,    # already in progress; lower priority for *entry*
+}
+```
+
+Two things to note:
+
+- `early_entry` and `breakout_today` share tier 0. They are both the
+  "act now" bucket. EARLY is pre-pivot conviction; BO is post-pivot
+  confirmation. Neither is universally better than the other, so the
+  tie falls to score, then volume, then bucket.
+- `follow_through` is tier 2, *below* NEAR. FT is already moving and
+  is a lower-priority entry than a fresh setup at the same score. It
+  still beats stocks whose stage is not in the table (default tier 99,
+  e.g. `damaged_base` when someone passes `actionable_only=False`).
+
+### Distance bucket (asymmetric)
+
+```python
+def _distance_bucket(distance_pct: float) -> int:
+    if 0.0 <= distance_pct <= 3.0:
+        return 0  # best: fresh BO at/just above pivot
+    if -3.0 <= distance_pct < 0.0:
+        return 1  # watch/early: just below pivot
+    if 3.0 < distance_pct <= 8.0:
+        return 2  # acceptable but later
+    return 3      # extended (>+8%) or too far below (<-3%)
+```
+
+The bucket boundaries match the stage rules: weekly's near-pivot
+threshold is 3%, monthly's is 5%, and `breakout_today` requires
+`close >= pivot * 1.005` so confirmed BOs land at ≥+0.5%. Any BO at
+`+15%` (inside the `follow_through` pivot extension cap of 25%) gets
+parked in bucket 3, which is the correct behavior for entry
+scanning.
+
+### Worked examples
+
+| Stock | score | stage | vol | dist | tier | bucket | rank |
+|---|---|---|---|---|---|---|---|
+| HI_SCORE_FT | 11 | follow_through | 1.5 | +20% | 2 | 3 | **1st** (score dominates) |
+| LO_SCORE_BO |  8 | breakout_today | 5.0 | +1%  | 0 | 0 | 2nd |
+
+Score still dominates — that's how the original behavior is preserved.
+
+At **equal score**:
+
+| Stock | stage | vol | dist | tier | bucket | rank |
+|---|---|---|---|---|---|---|
+| BO_PLUS_1       | breakout_today | 2.0 | +1.0% | 0 | 0 | **1st** |
+| EARLY_MINUS_1   | early_entry    | 2.0 | -1.0% | 0 | 1 | 2nd |
+| NEAR_MINUS_1    | near_breakout  | 1.0 | -1.0% | 1 | 1 | 3rd |
+| FT_PLUS_1       | follow_through | 2.0 | +1.0% | 2 | 0 | 4th |
+
+This is the key behavior change from Round 1. Under the old symmetric
+`abs()` sort, `BO_PLUS_1` and `EARLY_MINUS_1` would tie on distance and
+fall back to input order. Now the asymmetric bucket puts the confirmed
+breakout first, as it should.
+
+### The review scenario, explicitly
+
+The reviewer flagged: *"a stock just above pivot with volume
+confirmation should beat one just below pivot."* At equal score:
+
+| Stock | stage | vol | dist | tier | vol key | bucket | rank |
+|---|---|---|---|---|---|---|---|
+| CONFIRMED_PLUS_1 | breakout_today | 2.5 | +1% | 0 | -2.5 | 0 | **1st** |
+| NEAR_MINUS_1     | near_breakout  | 1.0 | -1% | 1 | -1.0 | 1 | 2nd |
+
+Wins at the **tier** level (0 < 1) before the bucket or volume keys
+even matter. Exactly the intended priority.
+
+### What does NOT change
+
+- Filtering (`score >= min_score and actionable`) is unchanged —
+  same stocks match.
+- Score is still the primary key. A score-11 FT still ranks above a
+  score-8 BO.
+- Volume ratio still matters within the same score+stage bucket.
+- No changes to strategy, data, models, or run.py.
+
+### Validation
+
+All five levels of the hierarchy plus the review scenario were
+verified with isolated test cases:
+
+```
+== weekly: hierarchical sort ==
+[PASS] Level 1: score 11 beats score 8 regardless of stage/volume/distance
+[PASS] Level 2: BO/EARLY are top two
+[PASS] Level 2: NEAR is third
+[PASS] Level 2: FT is last
+[PASS] Level 3: higher volume wins within same tier+bucket
+[PASS] Level 4: +1% (bucket 0) ranks above -1% (bucket 1)
+[PASS] Level 4: -1% (bucket 1) ranks above +5% (bucket 2)
+[PASS] Level 4: +5% (bucket 2) ranks above extended/too-far
+[PASS] Level 4: +15% and -5% share bucket 3 (last two positions)
+[PASS] Level 5: +0.5% closer-to-pivot wins within bucket 0
+[PASS] Review scenario: confirmed BO at +1% beats NEAR at -1%
+[PASS] Bucket asymmetry: +1% (bucket 0) beats -1% (bucket 1) at same tier/score/volume
+```
+
+Same 12 checks pass on monthly (24 total).
+
+End-to-end through real `run_scan` on fixtures:
+
+```
+BO.NS    score=11  stage=breakout_today  dist=+3.65%  vol=6.49x  -> rank 1
+NEAR.NS  score= 8  stage=early_entry     dist=-1.35%  vol=1.08x  -> rank 2
+```
+
+Score still dominates; no regression on the existing 35-test suite.
+
+---
+
+## Round 3 validation summary
+
+| Layer | Scope | Result |
+|---|---|---|
+| Existing unit tests | weekly + monthly + daily + overall | **35 / 35 pass** |
+| Hierarchical-sort focused checks | 12 checks × 2 timeframes | **24 / 24 pass** |
+| End-to-end `run_scan` on fixtures | weekly + monthly | Correct order |
+
+Running totals across all three rounds: **7 fixes, 81 validation checks, 0 regressions**.
