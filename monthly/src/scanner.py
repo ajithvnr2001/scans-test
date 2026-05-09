@@ -10,6 +10,36 @@ from src.strategy import analyze_five_star_setup
 from src.universe import load_all_nse_symbols, unique_yahoo_symbols
 
 
+# Trading-priority tiers for ranking.
+#
+# Tier 0 is the "act now" bucket: fresh breakouts and strict pre-breakout
+# early entries. Both are highest conviction for entries at current levels.
+# Tier 1 is NEAR: pressed up against the pivot but not yet through, so it
+# is a preparation candidate rather than a trigger. Tier 2 is FT, which is
+# already in progress and therefore a lower-priority *entry* than a fresh
+# setup, even though it is confirmed.
+_STAGE_TIER = {
+    "early_entry": 0,
+    "breakout_today": 0,
+    "near_breakout": 1,
+    "follow_through": 2,
+}
+
+
+# Distance buckets penalize extension asymmetrically. A stock just above
+# pivot is better than one just below pivot (confirmed vs not), and a stock
+# that has already run away from its pivot is the worst entry regardless
+# of score.
+def _distance_bucket(distance_pct: float) -> int:
+    if 0.0 <= distance_pct <= 3.0:
+        return 0  # best: fresh BO at/just above pivot
+    if -3.0 <= distance_pct < 0.0:
+        return 1  # watch / early: just below pivot
+    if 3.0 < distance_pct <= 8.0:
+        return 2  # acceptable, but already moving
+    return 3      # extended (>8%) or too far below (<-3%)
+
+
 class HistoryProvider(Protocol):
     def fetch_history(self, symbol: str) -> list[Candle]:
         ...
@@ -67,12 +97,19 @@ def run_scan(
             if match:
                 matches.append(match)
 
-    # Sort by: score desc, breakout volume desc, then proximity to pivot
-    # (closest to 0% wins; penalizes stocks already extended above pivot).
+    # Trading-priority sort (each key ascending, so "lower = better"):
+    #   1. score desc                 primary conviction
+    #   2. stage tier                 BO/EARLY > NEAR > FT > other
+    #   3. breakout volume desc       confirmed demand beats weak volume
+    #   4. distance bucket            asymmetric: just-above-pivot beats
+    #                                  just-below, extended ranks last
+    #   5. |distance_to_pivot_pct|    within-bucket tiebreaker; closer wins
     matches.sort(
         key=lambda item: (
             -item.signal.score,
+            _STAGE_TIER.get(item.signal.stage, 99),
             -item.signal.metrics.get("breakout_volume_ratio", 0),
+            _distance_bucket(item.signal.metrics.get("distance_to_pivot_pct", 100)),
             abs(item.signal.metrics.get("distance_to_pivot_pct", 100)),
         ),
     )
